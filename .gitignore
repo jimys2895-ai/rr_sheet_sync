@@ -1,0 +1,9 @@
+node_modules/
+.env
+.env.*
+!.env.example
+credentials/
+.sheet_id
+.token.json
+.token.*.json
+*.log

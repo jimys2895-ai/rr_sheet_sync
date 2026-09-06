@@ -1,0 +1,90 @@
+# Render Blueprint — 6 cron jobs (scheduled sync) + 1 web service (outbound/inbound force refresh).
+# Deploy: push this repo to GitHub, then in Render → New → Blueprint → select the repo.
+# Blueprint spec: https://render.com/docs/blueprint-spec   ·   Cron syntax: https://crontab.guru
+#
+# This blueprint defines ONLY the services. Every environment variable is set by hand in the Render
+# dashboard (Environment Group + per-service Environment tab) — nothing is declared here, so a Blueprint
+# re-sync never overwrites your values. See README "Deploy to Render" for the full list to configure.
+
+services:
+  - type: cron
+    name: roserocket-sheets-outbound
+    runtime: node
+    plan: starter # cron jobs require a paid instance; billed only while running
+    region: oregon # or: ohio, virginia, frankfurt, singapore
+    # Minute :00,:05,… — the schedules below are deliberately OFFSET from this one. Every job here
+    # shares ONE Google service account, and Sheets quotas (read/write requests per minute per user)
+    # are counted per account. When outbound+inbound+commission+ops+trip-history all fired on the hour
+    # they exhausted the bucket between them: the ops run lost its Force Deliver write-back and never
+    # read the Force Delete Manifest queue at all. No two jobs may share a minute.
+    schedule: "*/5 * * * *" # :00,:05,:10,… (UTC). Outbound (US Outbound) sheet sync.
+    buildCommand: npm ci
+    startCommand: npm run sync:outbound
+    autoDeploy: true # redeploy automatically on git push
+
+  - type: cron
+    name: roserocket-sheets-inbound
+    runtime: node
+    plan: starter
+    region: oregon
+    schedule: "2-59/5 * * * *" # :02,:07,:12,… — offset 2 min from outbound.
+    buildCommand: npm ci
+    startCommand: npm run sync:inbound
+    autoDeploy: true
+
+  - type: cron
+    name: roserocket-sheets-commission
+    runtime: node
+    plan: starter
+    region: oregon
+    schedule: "4-59/10 * * * *" # :04,:14,:24,… — offset 4 min, clear of outbound and inbound.
+    buildCommand: npm ci
+    startCommand: npm run sync:commission
+    autoDeploy: true
+
+  - type: cron
+    name: roserocket-sheets-ops
+    runtime: node
+    plan: starter
+    region: oregon
+    schedule: "8 * * * *" # :08 hourly — off the hour boundary, clear of every other job.
+    buildCommand: npm ci
+    startCommand: npm run sync:ops
+    autoDeploy: true
+
+  - type: cron
+    name: roserocket-exchange-rate
+    runtime: node
+    plan: starter
+    region: oregon
+    # Saturdays at 12:00 UTC (08:00 ET in summer, 07:00 ET in winter). Each RoseRocket rate week runs
+    # Saturday→Friday and is priced at the Bank of Canada close of the Friday before, which publishes
+    # ~16:30 ET Friday — so by this run the rate is always available. Fills the USD→CAD rate table for
+    # BOTH orgs (CE Logistics + CE Trucking), each independent; same rate written to each.
+    schedule: "0 12 * * 6"
+    buildCommand: npm ci
+    startCommand: npm run sync:exchange-rates
+    autoDeploy: true
+
+  - type: cron
+    name: roserocket-trip-history
+    runtime: node
+    plan: starter
+    region: oregon
+    # Every 30 minutes. Archives each completed round trip once its inbound unloads at the terminal:
+    # one row per manifest on the O/B, I/B and Rounder tabs, stamped with the finish week. Frozen +
+    # de-duplicated by manifest, so the cadence only affects how quickly finished trips are captured.
+    schedule: "13,43 * * * *" # :13 and :43 — clear of every other job.
+    buildCommand: npm ci
+    startCommand: npm run sync:trip-history
+    autoDeploy: true
+
+  - type: web
+    name: roserocket-sheets-webhook
+    runtime: node
+    plan: starter
+    region: oregon
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true

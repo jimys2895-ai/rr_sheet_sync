@@ -1,0 +1,33 @@
+{
+  "name": "roserocket-sheets-sync",
+  "version": "1.0.0",
+  "description": "One-way sync from RoseRocket to Google Sheets",
+  "main": "src/sync.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "sync": "node -e \"require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "sync:outbound": "node -e \"require('./src/sync').runOutboundSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "sync:inbound": "node -e \"process.env.SYNC_SCOPE='inbound'; require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "sync:commission": "node -e \"process.env.SYNC_SCOPE='commission'; require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "sync:ops": "node -e \"process.env.SYNC_SCOPE='ops'; require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "sync:exchange-rates": "node src/exchange-rates.js",
+    "sync:trip-history": "node src/trip-history.js",
+    "trip-history:backfill": "node src/trip-history-backfill.js",
+    "trip-history:dates": "node src/trip-history-dates.js",
+    "trip-history:repair": "node src/trip-history-repair.js",
+    "force-deliver": "node -e \"require('dotenv').config(); const { processForceDeliver } = require('./src/force-deliver'); const id = (process.env.GOOGLE_OPS_SHEET_ID||'').match(/\\/d\\/([a-zA-Z0-9-_]+)/)?.[1] || process.env.GOOGLE_OPS_SHEET_ID; if(!id){console.error('GOOGLE_OPS_SHEET_ID not set'); process.exit(1);} processForceDeliver(id).then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "force-cancel": "node -e \"require('dotenv').config(); const { processForceCancel } = require('./src/force-cancel'); const id = (process.env.GOOGLE_OPS_SHEET_ID||'').match(/\\/d\\/([a-zA-Z0-9-_]+)/)?.[1] || process.env.GOOGLE_OPS_SHEET_ID; if(!id){console.error('GOOGLE_OPS_SHEET_ID not set'); process.exit(1);} processForceCancel(id).then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "force-delete-manifest": "node -e \"require('dotenv').config(); const { processForceDeleteManifest } = require('./src/force-delete-manifest'); const id = (process.env.GOOGLE_OPS_SHEET_ID||'').match(/\\/d\\/([a-zA-Z0-9-_]+)/)?.[1] || process.env.GOOGLE_OPS_SHEET_ID; if(!id){console.error('GOOGLE_OPS_SHEET_ID not set'); process.exit(1);} processForceDeleteManifest(id).then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "invoice-sent": "node -e \"require('dotenv').config(); const { syncInvoiceSentReport } = require('./src/invoice-sent-report'); const { getCommissionSheetId } = require('./src/sync'); const id = getCommissionSheetId(); if(!id){console.error('GOOGLE_COMMISSION_SHEET_ID not set'); process.exit(1);} syncInvoiceSentReport(id).then(()=>process.exit(0)).catch(e=>{console.error(e.message);process.exit(1);})\"",
+    "test-auth": "node setup-auth.js",
+    "test-google-auth": "node test-google-auth.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "googleapis": "^140.0.0"
+  }
+}
