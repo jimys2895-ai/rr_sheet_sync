@@ -114,6 +114,14 @@ function isAuthRelatedGoogleError(err) {
   return /token|oauth|premature close|invalid response body/i.test(String(err?.message ?? ''));
 }
 
+// Sheets enforces its read/write limits over a rolling ONE-MINUTE window, per service account. Backing
+// off 8 or 16 seconds just lands inside the same exhausted window and burns a retry for nothing — the
+// only wait that reliably helps is one that outlives the window. Everything else keeps the old escalating
+// delay, which suits genuinely transient 5xx.
+const QUOTA_WINDOW_MS = 65000;
+const isQuotaError = (err) => /quota exceeded|rate limit|resource[_ ]exhausted|too many requests/i
+  .test(String(err?.message ?? '') + ' ' + String(err?.cause?.message ?? ''));
+
 async function withGoogleRetry(operation, label = 'Google API', options = {}) {
   const maxAttempts = options.maxAttempts ?? 5;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -122,7 +130,9 @@ async function withGoogleRetry(operation, label = 'Google API', options = {}) {
     } catch (err) {
       if (!isRetryableGoogleError(err) || attempt === maxAttempts) throw err;
       if (isAuthRelatedGoogleError(err)) resetGoogleClients();
-      const wait = (options.baseDelayMs ?? 3000) * attempt;
+      const wait = isQuotaError(err)
+        ? QUOTA_WINDOW_MS
+        : (options.baseDelayMs ?? 3000) * attempt;
       console.warn(
         `[Sheets] Transient error during ${label} — retry ${attempt}/${maxAttempts} in ${wait / 1000}s: ${err.message}`,
       );

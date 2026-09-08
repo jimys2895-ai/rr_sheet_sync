@@ -23,6 +23,7 @@ const {
 const {
   readTabValues, writeToSheetWithRetry, syncTable, setConfigCell, withGoogleRetry,
   writeTabRange, applyCellDropdown,
+  sleep,
 } = require('./sheets');
 
 // The blue "Alternating colors" look the client set on the sheet: #5b95f9 header, white / light-blue
@@ -766,16 +767,26 @@ async function updateTab(
 // outbound leg, so neither is padded onto the other tab with blank miles. Every trip reaches Rounder.
 // updateTab re-reads the tab and drops manifests already present, so calling this repeatedly within a
 // run is safe — that is what makes the long backfill resumable.
+// Sheets counts writes per MINUTE per service account, and this job writes five tabs — roughly forty
+// write calls — while the outbound and inbound crons are writing to their own sheets on the same account.
+// Fired back to back that reliably exhausts the quota; the outbound sync has spaced its tab writes for
+// exactly this reason since it was built. Same treatment here.
+const TAB_WRITE_DELAY_MS = Number(process.env.SHEETS_TAB_WRITE_DELAY_MS ?? 4000);
+
 async function archiveManifests(sheetId, driverTypes, manifests) {
   const hasLeg = (v) => v !== '' && v != null;
   const obManifests = manifests.filter((m) => hasLeg(m.obMiles));
   const ibManifests = manifests.filter((m) => hasLeg(m.ibMiles));
   const ob = await updateTab(sheetId, OUTBOUND_TAB, 'leg', driverTypes, obManifests.map(obRecord));
+  await sleep(TAB_WRITE_DELAY_MS);
   const ib = await updateTab(sheetId, INBOUND_TAB, 'leg', driverTypes, ibManifests.map(ibRecord));
+  await sleep(TAB_WRITE_DELAY_MS);
   const rd = await updateTab(sheetId, ROUNDER_TAB, 'rounder', driverTypes, manifests.map(rounderRecord));
+  await sleep(TAB_WRITE_DELAY_MS);
   // Last, so their SUMIFs are rebuilt against the row counts the three tabs just settled on.
   const driverSets = [ob.drivers, ib.drivers, rd.drivers];
   await updateByDriverTab(sheetId, driverTypes, driverSets);
+  await sleep(TAB_WRITE_DELAY_MS);
   await updateCompareTab(sheetId, driverTypes, driverSets);
 }
 
