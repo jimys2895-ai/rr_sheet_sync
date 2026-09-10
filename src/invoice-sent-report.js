@@ -30,6 +30,11 @@ const HOUSE_CURRENT_TAB = "House Cur";
 const HOUSE_PREVIOUS_TAB = "House Pre";
 const TAB_NAME = ALL_COMMISSION_CURRENT_TAB;
 const COMMISSION_LOOKUP_TAB = "Lookup";
+// This report writes thirteen tabs, several write calls each. Fired close together that clears the
+// Sheets per-minute write quota on its own, before the outbound and inbound crons - which share the
+// service account and run every five minutes - are counted. Spacing them out costs a couple of minutes
+// and saves more than that in quota backoff, exactly as it did for the trip-history job.
+const TAB_WRITE_DELAY_MS = Number(process.env.SHEETS_TAB_WRITE_DELAY_MS ?? 12000);
 // Frozen month-by-month snapshot; see updateCommissionSummary.
 const COMMISSION_SUMMARY_TAB = "Summary";
 // Full names — used ONLY to match the "On commission" column to a rep (commissionRepForRow). The tab
@@ -1112,7 +1117,7 @@ async function writeReportTabs(spreadsheetId, currentRows, previousRows) {
       columns: REPORT_COLUMNS,
     });
     console.log(`[InvoiceSent]   ${name}: ${tabRows.length} leg row(s)`);
-    if (i < tabs.length - 1) await sleep(4000);
+    if (i < tabs.length - 1) await sleep(TAB_WRITE_DELAY_MS);
   }
 }
 
