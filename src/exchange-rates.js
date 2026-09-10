@@ -1,6 +1,6 @@
 require('dotenv').config();
 const axios = require('axios');
-const { getToken } = require('./auth');
+const { getToken, invalidateToken } = require('./auth');
 const { usdToCadRateOn } = require('./fx');
 
 // Keeps RoseRocket's USD→CAD Exchange Rates table (Settings → Accounting → Exchange rates) filled in
@@ -45,16 +45,36 @@ function rateWeekFor(ymd) {
   };
 }
 
+// The token is resolved PER REQUEST, not baked into the instance at creation. RoseRocket tokens live
+// 30 minutes, and this job walks up to 40 pages: a run that starts near the end of a token's life would
+// otherwise carry a stale bearer through every remaining call and fail. A 401/403 refreshes it and
+// retries once — the same shape roserocket.js uses, and the fix for the failure mode that once left the
+// trip-history archive full of half-empty rows.
 async function api(orgUrl) {
   if (!orgUrl) {
     throw new Error('No RoseRocket org URL provided — cannot sync exchange rates.');
   }
-  const token = await getToken(orgUrl);
-  return axios.create({
+  const instance = axios.create({
     baseURL: PLATFORM_URL,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     timeout: 30000,
   });
+  instance.interceptors.request.use(async (config) => {
+    config.headers.Authorization = `Bearer ${await getToken(orgUrl)}`;
+    return config;
+  });
+  instance.interceptors.response.use(undefined, async (error) => {
+    const status = error.response?.status;
+    const config = error.config;
+    if ((status === 401 || status === 403) && config && !config._rrRetriedAfterAuth) {
+      config._rrRetriedAfterAuth = true;
+      console.warn(`[Auth] ${status} from ${config.url} — refreshing token and retrying once.`);
+      invalidateToken(orgUrl);
+      return instance.request(config);
+    }
+    throw error;
+  });
+  return instance;
 }
 
 function extractRates(payload) {
