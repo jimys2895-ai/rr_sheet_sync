@@ -29,6 +29,8 @@ const HOUSE_CURRENT_TAB = "House Cur";
 const HOUSE_PREVIOUS_TAB = "House Pre";
 const TAB_NAME = ALL_COMMISSION_CURRENT_TAB;
 const COMMISSION_LOOKUP_TAB = "Lookup";
+// Frozen month-by-month snapshot; see updateCommissionSummary.
+const COMMISSION_SUMMARY_TAB = "Summary";
 // Full names — used ONLY to match the "On commission" column to a rep (commissionRepForRow). The tab
 // TITLES are the rep's first name plus " Cur"/" Pre" (see commissionRepTabName), e.g. "Roger Cur".
 const COMMISSION_REP_NAMES = [
@@ -57,6 +59,7 @@ const COMMISSION_REP_PREVIOUS_TABS = COMMISSION_REP_NAMES.map((rep) =>
 // Left-to-right tab order on the commission spreadsheet.
 const COMMISSION_SHEET_TAB_ORDER = [
   COMMISSION_LOOKUP_TAB,
+  COMMISSION_SUMMARY_TAB,
   ALL_COMMISSION_CURRENT_TAB,
   ...COMMISSION_REP_CURRENT_TABS,
   HOUSE_CURRENT_TAB,
@@ -76,13 +79,14 @@ const COMMISSION_PREVIOUS_TABS = [
 const COMMISSION_TABS = COMMISSION_SHEET_TAB_ORDER.filter(
   (t) =>
     t !== COMMISSION_LOOKUP_TAB &&
+    t !== COMMISSION_SUMMARY_TAB &&
     t !== ALL_COMMISSION_CURRENT_TAB &&
     t !== ALL_COMMISSION_PREVIOUS_TAB,
 );
 const NAMED_COMMISSION_REPS = [...COMMISSION_REP_NAMES];
 const COMMISSION_FILTER_OPTIONS = ["All", ...NAMED_COMMISSION_REPS, "House"];
 const COMMISSION_TAB_ORDER = COMMISSION_SHEET_TAB_ORDER.filter(
-  (t) => t !== COMMISSION_LOOKUP_TAB,
+  (t) => t !== COMMISSION_LOOKUP_TAB && t !== COMMISSION_SUMMARY_TAB,
 );
 const COMMISSION_KEEP_TABS = [...COMMISSION_SHEET_TAB_ORDER];
 
@@ -881,6 +885,164 @@ async function writeCommissionLookupTab(spreadsheetId, periodRows, filters) {
   });
 }
 
+
+// ── Summary ──────────────────────────────────────────────────────────────────────────────────────────
+// A permanent, month-by-month snapshot: one row per commission rep per CLOSED month, with the four
+// figures the planners actually act on. Blank "On commission" is House, exactly as the rep tabs treat it.
+//
+// This exists because the rest of the sheet remembers nothing. Current and Previous are live mirrors,
+// rebuilt from RoseRocket on every run, so a month's numbers vanish the moment it stops being "previous"
+// — August is unrecoverable from this sheet on 1 October. The Summary is the only place they persist.
+//
+// Rows are FROZEN. A month is written once, when it is complete, and never recomputed: these are the
+// figures commission gets paid on, and a number that moves after payout is worse than one that is
+// slightly stale. Correcting a month means deleting its rows and letting the next run rebuild them.
+const SUMMARY_MONTH_HEADER = "Month";
+const SUMMARY_REP_HEADER = "On commission";
+const SUMMARY_CAD_HEADER = "Total CAD";
+const SUMMARY_COST_HEADER = "Total Carrier Cost";
+const SUMMARY_MARGIN_HEADER = "Margin $";
+const SUMMARY_PCT_HEADER = "Margin %";
+const SUMMARY_HEADER_ROW = 1;
+
+const summaryColLetter = (i) => String.fromCharCode(65 + i);
+
+// "2026-08" looks like a date to Sheets, and USER_ENTERED silently converts it to the serial for
+// 1 Aug 2026. That broke the freeze check outright: the month read back as 46235, never matched the
+// "2026-08" being looked for, and every run quietly re-banked a month it should never touch again. The
+// leading apostrophe forces it to stay text on write; monthKeyFromCell copes with either form on read,
+// so rows already written as serials still match.
+const forceText = (v) => `'${v}`;
+const SHEETS_EPOCH_MS = Date.UTC(1899, 11, 30);
+function monthKeyFromCell(value) {
+  const raw = String(value ?? "").trim();
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+  const serial = Number(raw);
+  if (Number.isFinite(serial) && serial > 0 && serial < 200000) {
+    const d = new Date(SHEETS_EPOCH_MS + serial * 86400000);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  }
+  return "";
+}
+
+// SUBTOTAL, not SUM: filter the tab to one month and the totals become that month's.
+const summarySubtotal = (header) => ({
+  getTotalFormula: ({ firstDataRow, lastDataRow, colLetter, resolvedColumns }) => {
+    const L = colLetter(resolvedColumns.findIndex((c) => c.header === header));
+    return `=SUBTOTAL(109,${L}${firstDataRow}:${L}${lastDataRow})`;
+  },
+});
+
+function buildSummaryColumns() {
+  const cols = [
+    { header: SUMMARY_MONTH_HEADER, getLabel: (r) => forceText(r.month), width: 90 },
+    { header: SUMMARY_REP_HEADER, getLabel: (r) => r.rep, width: 170 },
+    { header: SUMMARY_CAD_HEADER, getLabel: (r) => r.cad, width: 120, format: "currency", ...summarySubtotal(SUMMARY_CAD_HEADER) },
+    { header: SUMMARY_COST_HEADER, getLabel: (r) => r.cost, width: 150, format: "currency", ...summarySubtotal(SUMMARY_COST_HEADER) },
+    { header: SUMMARY_MARGIN_HEADER, getLabel: (r) => r.margin, width: 110, format: "currency", ...summarySubtotal(SUMMARY_MARGIN_HEADER) },
+    { header: SUMMARY_PCT_HEADER, getLabel: null, width: 90, format: "percent" },
+  ];
+  const at = (h) => summaryColLetter(cols.findIndex((c) => c.header === h));
+  const cad = at(SUMMARY_CAD_HEADER);
+  const margin = at(SUMMARY_MARGIN_HEADER);
+  const row = (i) => SUMMARY_HEADER_ROW + 1 + i;
+  // Margin % is derived, never stored — same shape as the "Margin %" total on the rep tabs, and it stays
+  // consistent if a figure is ever hand-corrected. The percent format renders 17.4 as "17.4%".
+  cols.find((c) => c.header === SUMMARY_PCT_HEADER).getLabel = (r, i) =>
+    `=IF(${cad}${row(i)}=0,"",${margin}${row(i)}/${cad}${row(i)}*100)`;
+  cols.find((c) => c.header === SUMMARY_PCT_HEADER).getTotalFormula = ({ totalsRow }) =>
+    `=IF(${cad}${totalsRow}=0,"",${margin}${totalsRow}/${cad}${totalsRow}*100)`;
+  return cols;
+}
+
+// "2026-08" for the month that has just closed — the one the Previous tabs are showing.
+function previousMonthKey() {
+  const { start } = previousMonthDateRange();
+  return String(start).slice(0, 7);
+}
+
+// One row per rep for a set of leg rows. Reps with nothing in the month are simply absent.
+function summarizeRowsByRep(rows, month) {
+  const agg = new Map();
+  for (const row of rows) {
+    const rep = commissionRepForRow(row);
+    const a = agg.get(rep) ?? { month, rep, cad: 0, cost: 0, margin: 0 };
+    a.cad += Number(row.revenueCad) || 0;
+    a.cost += Number(row.carrierCost) || 0;
+    a.margin += Number(row.margin) || 0;
+    agg.set(rep, a);
+  }
+  const round2 = (n) => Math.round(n * 100) / 100;
+  return [...agg.values()].map((a) => ({
+    ...a, cad: round2(a.cad), cost: round2(a.cost), margin: round2(a.margin),
+  }));
+}
+
+async function updateCommissionSummary(spreadsheetId, previousRows) {
+  const month = previousMonthKey();
+  const columns = buildSummaryColumns();
+
+  // Read what is already banked. Months present here are never recomputed.
+  //
+  // This read MUST NOT fail quietly. Everything already banked is re-emitted from what it returns, so a
+  // swallowed error reads as "nothing is banked" and the write that follows replaces months of frozen
+  // history with just the one month this run happens to know about. Sheets throws here for entirely
+  // routine reasons — a write-quota burst from the tabs written moments earlier is enough — so on any
+  // failure this run does nothing at all and the next one picks it up.
+  await ensureTab(spreadsheetId, COMMISSION_SUMMARY_TAB);
+  let grid;
+  try {
+    grid = await readTabValues(spreadsheetId, COMMISSION_SUMMARY_TAB, {
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+  } catch (err) {
+    console.warn(
+      `[InvoiceSent]   ${COMMISSION_SUMMARY_TAB}: could not read the banked months (${err.message}) — ` +
+        "skipping this run rather than risk overwriting them.",
+    );
+    return { month, added: 0, months: 0, skipped: true };
+  }
+  const headerIdx = grid.findIndex(
+    (r) => Array.isArray(r) && r.includes(SUMMARY_MONTH_HEADER) && r.includes(SUMMARY_REP_HEADER),
+  );
+  const header = headerIdx >= 0 ? grid[headerIdx] : [];
+  const idx = (h) => header.indexOf(h);
+  const existing = [];
+  if (headerIdx >= 0) {
+    for (const r of grid.slice(headerIdx + 1)) {
+      const m = monthKeyFromCell(r[idx(SUMMARY_MONTH_HEADER)]);
+      const rep = String(r[idx(SUMMARY_REP_HEADER)] ?? "").trim();
+      if (!m || !rep) continue; // skips the SUBTOTAL row, which has no month
+      existing.push({
+        month: m, rep,
+        cad: Number(r[idx(SUMMARY_CAD_HEADER)]) || 0,
+        cost: Number(r[idx(SUMMARY_COST_HEADER)]) || 0,
+        margin: Number(r[idx(SUMMARY_MARGIN_HEADER)]) || 0,
+      });
+    }
+  }
+
+  const banked = new Set(existing.map((r) => r.month));
+  const added = banked.has(month) ? [] : summarizeRowsByRep(previousRows, month);
+  const all = [...existing, ...added].sort(
+    (a, b) => (a.month === b.month ? b.cad - a.cad : b.month.localeCompare(a.month)),
+  );
+
+  if (!all.length) {
+    console.log(`[InvoiceSent]   ${COMMISSION_SUMMARY_TAB}: nothing to record yet.`);
+    return { month, added: 0, months: 0 };
+  }
+  await writeToSheetWithRetry(spreadsheetId, COMMISSION_SUMMARY_TAB, all, {
+    columns, headerRow: SUMMARY_HEADER_ROW,
+  });
+  console.log(
+    `[InvoiceSent]   ${COMMISSION_SUMMARY_TAB}: ${banked.size + (added.length ? 1 : 0)} month(s), ` +
+      (added.length ? `banked ${month} (${added.length} rep row(s))` : `${month} already banked`) +
+      ` → ${all.length} rows.`,
+  );
+  return { month, added: added.length, months: banked.size + (added.length ? 1 : 0) };
+}
+
 async function writeReportTabs(spreadsheetId, currentRows, previousRows) {
   const currentGroups = groupRowsByCommissionTab(currentRows);
   const previousGroups = groupRowsByCommissionPreviousTab(previousRows);
@@ -970,6 +1132,9 @@ async function syncInvoiceSentReport(spreadsheetId) {
   const previousRows = filterRowsByPreviousDeliveryMonth(extendedLegRowsAll);
 
   await writeReportTabs(spreadsheetId, monthlyRows, previousRows);
+  // Bank the closed month before the tab tidy-up, so the Summary exists by the time order is applied.
+  await sleep(4000);
+  await updateCommissionSummary(spreadsheetId, previousRows);
 
   await removeUnwantedOpsSheets(spreadsheetId, COMMISSION_SHEET_TAB_ORDER);
   await reorderSheets(spreadsheetId, COMMISSION_SHEET_TAB_ORDER);
@@ -990,6 +1155,8 @@ async function syncInvoiceSentReport(spreadsheetId) {
 
 module.exports = {
   syncInvoiceSentReport,
+  updateCommissionSummary,
+  COMMISSION_SUMMARY_TAB,
   TAB_NAME,
   ALL_COMMISSION_CURRENT_TAB,
   ALL_COMMISSION_PREVIOUS_TAB,
