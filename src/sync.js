@@ -24,6 +24,7 @@ const {
   readFirstTabColumnWidths,
   applyColumnWidths,
   readTabValues,
+  stampLastSynced,
   readColumnColorsByKey,
   applyCellColors,
   setConfigCell,
@@ -1371,6 +1372,11 @@ async function runDirectionalSync(config) {
       console.error(`[Sync] ERROR restoring Summary note colours: ${err.message}`);
     }
   }
+
+  // Freshness marker beside the Summary's OO Cut cell. Written last, after setConfigCell — that clears
+  // the whole of row 1 before rewriting A1:B1, so a stamp placed earlier would be wiped by it.
+  const stamped = await stampLastSynced(sheetId, SUMMARY_TAB);
+  if (stamped) console.log(`[Sync] ${label} Summary stamped: last synced ${stamped}`);
 
   console.log(
     `[Sync] ${label} refresh complete in ${elapsed(t0)}: https://docs.google.com/spreadsheets/d/${sheetId}`,

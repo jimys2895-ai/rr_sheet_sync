@@ -22,7 +22,7 @@ const {
 } = require('./roserocket');
 const {
   readTabValues, writeToSheetWithRetry, syncTable, setConfigCell, withGoogleRetry,
-  writeTabRange, applyCellDropdown,
+  writeTabRange, applyCellDropdown, stampLastSynced,
   sleep,
 } = require('./sheets');
 
@@ -771,7 +771,12 @@ async function updateTab(
 // write calls — while the outbound and inbound crons are writing to their own sheets on the same account.
 // Fired back to back that reliably exhausts the quota; the outbound sync has spaced its tab writes for
 // exactly this reason since it was built. Same treatment here.
-const TAB_WRITE_DELAY_MS = Number(process.env.SHEETS_TAB_WRITE_DELAY_MS ?? 4000);
+// 12s, not the 4s this started at. Each tab costs roughly eight write calls, so five tabs fired four
+// seconds apart still lands ~40 writes inside one 60-second quota window — and with the outbound and
+// inbound crons writing on the same account every five minutes, that reliably tipped over: a run was
+// observed spending four of its five retries, 260 seconds, waiting out quota it had caused itself.
+// Spreading the tabs across a minute costs ~48s and buys back far more than that.
+const TAB_WRITE_DELAY_MS = Number(process.env.SHEETS_TAB_WRITE_DELAY_MS ?? 12000);
 
 async function archiveManifests(sheetId, driverTypes, manifests) {
   const hasLeg = (v) => v !== '' && v != null;
@@ -956,6 +961,11 @@ async function syncTripHistory(sheetId, { sinceDays = SINCE_DAYS, flushEvery = 0
     `[TripHistory] ${archivedCount} manifest(s) archived` +
       (skipped ? ` (${skipped} skipped — orders aged out of the window)` : '') + '.',
   );
+
+  // One stamp per spreadsheet, on Rounder — the tab the planners live in. Deliberately not all three:
+  // this job already runs close to the Sheets write quota, and three markers buy nothing over one.
+  const stamped = await stampLastSynced(sheetId, ROUNDER_TAB);
+  if (stamped) console.log(`[TripHistory] Rounder stamped: last synced ${stamped}`);
 
   console.log(`[TripHistory] Done in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
   return { sheetId, archived: archivedCount, skipped };
