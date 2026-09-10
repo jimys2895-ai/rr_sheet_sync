@@ -12,6 +12,7 @@
     "sync:outbound": "node -e \"require('./src/sync').runOutboundSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
     "sync:inbound": "node -e \"process.env.SYNC_SCOPE='inbound'; require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
     "sync:commission": "node -e \"process.env.SYNC_SCOPE='commission'; require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
+    "commission:summary-backfill": "node src/commission-summary-backfill.js",
     "sync:ops": "node -e \"process.env.SYNC_SCOPE='ops'; require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
     "sync:exchange-rates": "node src/exchange-rates.js",
     "sync:trip-history": "node src/trip-history.js",

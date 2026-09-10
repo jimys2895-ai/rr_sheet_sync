@@ -978,9 +978,33 @@ function summarizeRowsByRep(rows, month) {
   }));
 }
 
-async function updateCommissionSummary(spreadsheetId, previousRows) {
-  const month = previousMonthKey();
+// The first and last day of a "YYYY-MM", as the date strings filterRowsByDateRange expects.
+function monthDateRange(monthKey) {
+  const [y, m] = monthKey.split("-").map(Number);
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return { start: `${monthKey}-01`, end: `${monthKey}-${String(lastDay).padStart(2, "0")}` };
+}
+
+// Every closed month from `fromMonth` up to and including the most recently closed one.
+function closedMonthsSince(fromMonth) {
+  const last = previousMonthKey();
+  const months = [];
+  let [y, m] = fromMonth.split("-").map(Number);
+  for (let guard = 0; guard < 240; guard++) {
+    const key = `${y}-${String(m).padStart(2, "0")}`;
+    if (key > last) break;
+    months.push(key);
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return months;
+}
+
+// Banks any number of months in one write. `monthRows` maps "YYYY-MM" to that month's leg rows; a month
+// already on the tab is skipped untouched, which is what makes both this and the cron safe to re-run.
+async function bankCommissionMonths(spreadsheetId, monthRows) {
   const columns = buildSummaryColumns();
+  const month = [...monthRows.keys()].sort().join(", ") || previousMonthKey();
 
   // Read what is already banked. Months present here are never recomputed.
   //
@@ -1023,7 +1047,16 @@ async function updateCommissionSummary(spreadsheetId, previousRows) {
   }
 
   const banked = new Set(existing.map((r) => r.month));
-  const added = banked.has(month) ? [] : summarizeRowsByRep(previousRows, month);
+  const added = [];
+  const newMonths = [];
+  const skipped = [];
+  for (const key of [...monthRows.keys()].sort()) {
+    if (banked.has(key)) { skipped.push(key); continue; }
+    const repRows = summarizeRowsByRep(monthRows.get(key) ?? [], key);
+    if (!repRows.length) continue; // a month with no invoiced legs banks nothing rather than a blank row
+    added.push(...repRows);
+    newMonths.push(key);
+  }
   const all = [...existing, ...added].sort(
     (a, b) => (a.month === b.month ? b.cad - a.cad : b.month.localeCompare(a.month)),
   );
@@ -1035,12 +1068,22 @@ async function updateCommissionSummary(spreadsheetId, previousRows) {
   await writeToSheetWithRetry(spreadsheetId, COMMISSION_SUMMARY_TAB, all, {
     columns, headerRow: SUMMARY_HEADER_ROW,
   });
+  const total = new Set(all.map((r) => r.month)).size;
   console.log(
-    `[InvoiceSent]   ${COMMISSION_SUMMARY_TAB}: ${banked.size + (added.length ? 1 : 0)} month(s), ` +
-      (added.length ? `banked ${month} (${added.length} rep row(s))` : `${month} already banked`) +
+    `[InvoiceSent]   ${COMMISSION_SUMMARY_TAB}: ${total} month(s) banked` +
+      (newMonths.length ? `, added ${newMonths.join(", ")} (${added.length} rep row(s))` : "") +
+      (skipped.length ? `, ${skipped.join(", ")} already banked` : "") +
       ` → ${all.length} rows.`,
   );
-  return { month, added: added.length, months: banked.size + (added.length ? 1 : 0) };
+  return { added: added.length, newMonths, months: total };
+}
+
+// What the cron calls: bank the single month that has just closed.
+async function updateCommissionSummary(spreadsheetId, previousRows) {
+  return bankCommissionMonths(
+    spreadsheetId,
+    new Map([[previousMonthKey(), previousRows]]),
+  );
 }
 
 async function writeReportTabs(spreadsheetId, currentRows, previousRows) {
@@ -1156,6 +1199,13 @@ async function syncInvoiceSentReport(spreadsheetId) {
 module.exports = {
   syncInvoiceSentReport,
   updateCommissionSummary,
+  bankCommissionMonths,
+  closedMonthsSince,
+  monthDateRange,
+  previousMonthKey,
+  fetchInvoiceSentOrders,
+  buildInvoiceSentRows,
+  filterRowsByDateRange,
   COMMISSION_SUMMARY_TAB,
   TAB_NAME,
   ALL_COMMISSION_CURRENT_TAB,
