@@ -303,6 +303,22 @@ function defaultSinceDays() {
 
 // RoseRocket lists orders by created_at — extend the pull window back from the lookup start date
 // so orders delivered in that period are included (creation usually precedes delivery).
+// How far back the CURRENT-month tabs reach, in days since an order was CREATED.
+//
+// Orders are fetched by creation date but the tabs are filtered by DELIVERY date, so an order created
+// long before it delivers can be delivered this month yet sit outside the fetch. It then vanishes from
+// the current tabs mid-month — silently, exactly 30 days after it was created — and only reappears once
+// the month rolls into Previous, which reads a wider fetch. CEL-GTD1-228 was created 19 Aug, delivered
+// 1 Sep, and dropped off at 11:01 on 18 Sep with $6,099.99 of revenue on it.
+//
+// The previous-month window alone cannot be relied on for this: it is "start of last month + 21 days",
+// which is ~70 days mid-month but only ~51 on the 1st. This is a floor, set from what the planners say
+// is the realistic worst case between an order being raised and delivered.
+const CURRENT_MONTH_LOOKBACK_DAYS = parseInt(
+  process.env.COMMISSION_CURRENT_LOOKBACK_DAYS ?? "60",
+  10,
+);
+
 function computeLookupFetchSinceDays(filterStartYmd) {
   const envCommission = parseInt(
     process.env.ROSEROCKET_COMMISSION_SINCE_DAYS ?? "0",
@@ -1148,6 +1164,7 @@ async function syncInvoiceSentReport(spreadsheetId) {
   const extendedStarts = [prevRange.start];
   if (lookupFilters.refreshLookup) extendedStarts.push(lookupFilters.start);
   const extendedSinceDays = Math.max(
+    CURRENT_MONTH_LOOKBACK_DAYS,
     ...extendedStarts.map(computeLookupFetchSinceDays),
   );
   const extendedLegRowsAll = await buildExtendedLegRows(
@@ -1177,7 +1194,9 @@ async function syncInvoiceSentReport(spreadsheetId) {
     );
   }
 
-  const monthlyRows = filterRowsByCurrentDeliveryMonth(monthlyLegRowsAll);
+  // Both months read the SAME wide row set. The current month used to read the narrow monthly fetch,
+  // which is what made orders drop off it while the previous month kept them.
+  const monthlyRows = filterRowsByCurrentDeliveryMonth(extendedLegRowsAll);
   const previousRows = filterRowsByPreviousDeliveryMonth(extendedLegRowsAll);
 
   await writeReportTabs(spreadsheetId, monthlyRows, previousRows);
