@@ -75,7 +75,7 @@ async function api(orgUrl) {
     if ((status === 401 || status === 403) && !config._rrRetriedAfterAuth) {
       config._rrRetriedAfterAuth = true;
       console.warn(`[Auth] ${status} from ${config.url} — refreshing token and retrying once.`);
-      invalidateToken(orgUrl);
+      invalidateToken(orgUrl, String(config.headers?.Authorization ?? '').replace(/^Bearer\s+/, ''));
       return instance.request(config);
     }
     throw error;

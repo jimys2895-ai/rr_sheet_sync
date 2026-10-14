@@ -2,6 +2,7 @@ require('dotenv').config();
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { readSharedToken, writeSharedToken } = require('./token-cache');
 
 // v1.0 auth: POST JSON to /api/v1/sessions on the org-specific subdomain.
 // Credentials come from Settings → Org Apps in the RoseRocket UI.
@@ -21,6 +22,10 @@ const stores = new Map(); // per-org in-memory cache + in-flight login
 // attempt, then nothing until the cool-down ends. Network errors and 5xx do not trip it — those are
 // transient on RoseRocket's side, not a judgement about this account.
 const LOGIN_COOLDOWN_MS = Number(process.env.ROSEROCKET_LOGIN_COOLDOWN_MS ?? 15 * 60 * 1000);
+
+// A token taken from the shared cache must have at least this long left. Runs last up to ~10 minutes;
+// starting one on a token about to expire just buys a second login halfway through it.
+const SHARED_MIN_LIFE_MS = 5 * 60 * 1000;
 
 function orgSlug(orgUrl) {
   try {
@@ -48,7 +53,7 @@ function tokenUrlFor(orgUrl) {
 function getStore(orgUrl) {
   const key = orgSlug(orgUrl);
   if (!stores.has(key)) {
-    stores.set(key, { memory: { token: null, expiresAt: 0 }, inFlight: null, refusedUntil: 0, refusal: null });
+    stores.set(key, { memory: { token: null, expiresAt: 0 }, inFlight: null, refusedUntil: 0, refusal: null, rejected: null });
   }
   return stores.get(key);
 }
@@ -56,10 +61,19 @@ function getStore(orgUrl) {
 // Throws away the cached token (memory + disk) so the next getToken logs in again. Called when the API
 // answers 401/403: the token we hold is dead regardless of the expiry we recorded, and without this a
 // long-running job would keep presenting it until its own clock said otherwise.
-function invalidateToken(orgUrl = DEFAULT_ORG_URL) {
+//
+// `failedToken` is the token the rejected request actually carried. With several requests in flight,
+// each one's 401 arrives separately: the first clears the dead token and starts a re-login, and the rest
+// must NOT clear the replacement or cancel that re-login — otherwise every parallel 401 becomes its own
+// login, the same burst that got the account throttled. So: only act if the failed token is still the
+// current one, and never touch a re-login already in progress.
+function invalidateToken(orgUrl = DEFAULT_ORG_URL, failedToken = null) {
   const store = getStore(orgUrl);
+  if (failedToken && store.memory?.token && store.memory.token !== failedToken) return; // already replaced
+  if (failedToken && !store.memory?.token && store.rejected === failedToken) return;   // already handled
+  // Remember the token the API turned down, so the shared cache cannot hand the very same one back.
+  store.rejected = failedToken ?? store.memory?.token ?? store.rejected;
   store.memory = { token: null, expiresAt: 0 };
-  store.inFlight = null;
   try {
     fs.unlinkSync(tokenPath(orgUrl));
   } catch {
@@ -130,7 +144,7 @@ async function getToken(orgUrl = DEFAULT_ORG_URL) {
   if (valid(store.memory)) return store.memory.token;
 
   const disk = loadDiskToken(orgUrl);
-  if (disk) {
+  if (disk && disk.token !== store.rejected) {
     store.memory = disk;
     console.log(`[Auth] Token loaded from cache (${orgSlug(orgUrl)}).`);
     return disk.token;
@@ -146,7 +160,7 @@ async function getToken(orgUrl = DEFAULT_ORG_URL) {
   }
 
   if (!store.inFlight) {
-    store.inFlight = login(orgUrl)
+    store.inFlight = resolveToken(orgUrl, store)
       .then(entry => { store.memory = entry; store.inFlight = null; return entry; })
       .catch(err => {
         store.inFlight = null;
@@ -166,6 +180,22 @@ async function getToken(orgUrl = DEFAULT_ORG_URL) {
   }
   const entry = await store.inFlight;
   return entry.token;
+}
+
+// Shared cache first, then a real login — which is then shared for every other run. Runs inside the
+// single in-flight promise, so parallel requests in one process cost one cache read and at most one login.
+async function resolveToken(orgUrl, store) {
+  const slug = orgSlug(orgUrl);
+  const shared = await readSharedToken(slug);
+  if (shared && shared.token !== store.rejected && Date.now() < shared.expiresAt - SHARED_MIN_LIFE_MS) {
+    saveDiskToken(shared, orgUrl);
+    const mins = Math.round((shared.expiresAt - Date.now()) / 60000);
+    console.log(`[Auth] Token reused from shared cache (${slug}, ${mins} min left).`);
+    return shared;
+  }
+  const entry = await login(orgUrl);
+  await writeSharedToken(slug, entry);
+  return entry;
 }
 
 module.exports = { getToken, invalidateToken, orgSlug };
