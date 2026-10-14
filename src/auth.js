@@ -13,6 +13,15 @@ const CLIENT_SECRET = process.env.ROSEROCKET_CLIENT_SECRET;
 
 const stores = new Map(); // per-org in-memory cache + in-flight login
 
+// When RoseRocket REFUSES a login (any 4xx — wrong credentials, a security block, "too many login
+// attempts"), stop asking for a while instead of trying again on the next request. Retrying a refused
+// login never helps, and it is actively harmful: RoseRocket counts the attempts, and a burst of them is
+// what gets the account flagged. On 14 Oct a single refusal fanned out into ~10 attempts in seconds,
+// RoseRocket blocked the account, and every scheduled sync on it stopped. One refusal now means one
+// attempt, then nothing until the cool-down ends. Network errors and 5xx do not trip it — those are
+// transient on RoseRocket's side, not a judgement about this account.
+const LOGIN_COOLDOWN_MS = Number(process.env.ROSEROCKET_LOGIN_COOLDOWN_MS ?? 15 * 60 * 1000);
+
 function orgSlug(orgUrl) {
   try {
     return new URL(orgUrl).hostname.split('.')[0] || 'default';
@@ -39,7 +48,7 @@ function tokenUrlFor(orgUrl) {
 function getStore(orgUrl) {
   const key = orgSlug(orgUrl);
   if (!stores.has(key)) {
-    stores.set(key, { memory: { token: null, expiresAt: 0 }, inFlight: null });
+    stores.set(key, { memory: { token: null, expiresAt: 0 }, inFlight: null, refusedUntil: 0, refusal: null });
   }
   return stores.get(key);
 }
@@ -127,10 +136,33 @@ async function getToken(orgUrl = DEFAULT_ORG_URL) {
     return disk.token;
   }
 
+  if (Date.now() < store.refusedUntil) {
+    const mins = Math.ceil((store.refusedUntil - Date.now()) / 60000);
+    const err = new Error(
+      `RoseRocket refused the login for ${orgSlug(orgUrl)} (${store.refusal}); not retrying for ${mins} more min.`,
+    );
+    err.rrLoginFailure = true;
+    throw err;
+  }
+
   if (!store.inFlight) {
     store.inFlight = login(orgUrl)
       .then(entry => { store.memory = entry; store.inFlight = null; return entry; })
-      .catch(err => { store.inFlight = null; throw err; });
+      .catch(err => {
+        store.inFlight = null;
+        const status = err.response?.status;
+        if (status >= 400 && status < 500) {
+          store.refusedUntil = Date.now() + LOGIN_COOLDOWN_MS;
+          const msg = err.response?.data?.errors?.[0]?.message ?? err.response?.data?.message ?? '';
+          store.refusal = `HTTP ${status}${msg ? `: ${msg}` : ''}`;
+          console.error(
+            `[Auth] Login REFUSED for ${orgSlug(orgUrl)} (${store.refusal}). ` +
+              `Not retrying for ${Math.round(LOGIN_COOLDOWN_MS / 60000)} min.`,
+          );
+        }
+        err.rrLoginFailure = true;
+        throw err;
+      });
   }
   const entry = await store.inFlight;
   return entry.token;

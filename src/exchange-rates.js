@@ -61,12 +61,18 @@ async function api(orgUrl) {
   });
   instance.interceptors.request.use(async (config) => {
     config.headers.Authorization = `Bearer ${await getToken(orgUrl)}`;
+    // Marks a request that actually went out with a token. A failure while GETTING the token also lands
+    // in the error handler below — axios routes a rejected request interceptor there — carrying the
+    // LOGIN request's config, and retrying that re-sends the login. Every parallel request did so, which
+    // turned one refused login into a burst. Only requests carrying this mark are ever retried.
+    config._rrAuthed = true;
     return config;
   });
   instance.interceptors.response.use(undefined, async (error) => {
     const status = error.response?.status;
     const config = error.config;
-    if ((status === 401 || status === 403) && config && !config._rrRetriedAfterAuth) {
+    if (error.rrLoginFailure || !config?._rrAuthed) throw error;
+    if ((status === 401 || status === 403) && !config._rrRetriedAfterAuth) {
       config._rrRetriedAfterAuth = true;
       console.warn(`[Auth] ${status} from ${config.url} — refreshing token and retrying once.`);
       invalidateToken(orgUrl);
