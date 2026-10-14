@@ -14,13 +14,15 @@ const {
 //
 //   npm run commission:summary-backfill                # from COMMISSION_SUMMARY_FROM (default 2026-06)
 //   npm run commission:summary-backfill -- 2026-06
+//   npm run commission:summary-backfill -- 2026-08 --overwrite   # REPLACE months already banked
 //
 // The commission sheet keeps only the current and previous month, both rebuilt from RoseRocket on every
 // run, so older months exist nowhere on it — they have to be re-fetched. This walks back to the start
 // month, builds the leg rows once, and banks each closed month it does not already have.
 //
-// Safe to re-run: bankCommissionMonths skips any month already on the tab, so nothing frozen is
-// recomputed. Correcting a month means deleting its rows first, then running this again.
+// Safe to re-run: by default bankCommissionMonths skips any month already on the tab, so nothing locked
+// is recomputed. --overwrite recomputes and replaces every month in range from today's RoseRocket data —
+// the way to correct a month that was banked with wrong or not-yet-final figures.
 const DEFAULT_FROM = process.env.COMMISSION_SUMMARY_FROM || "2026-06";
 
 function getCommissionSheetId() {
@@ -35,7 +37,7 @@ function sinceDaysFor(fromMonth, bufferDays = 21) {
   return Math.max(days + bufferDays, bufferDays);
 }
 
-async function backfillCommissionSummary(spreadsheetId, { from = DEFAULT_FROM } = {}) {
+async function backfillCommissionSummary(spreadsheetId, { from = DEFAULT_FROM, overwrite = false } = {}) {
   if (!/^\d{4}-\d{2}$/.test(from)) throw new Error(`Start month must be YYYY-MM, got "${from}"`);
   const months = closedMonthsSince(from);
   if (!months.length) {
@@ -68,9 +70,12 @@ async function backfillCommissionSummary(spreadsheetId, { from = DEFAULT_FROM } 
     monthRows.set(key, slice);
   }
 
-  const result = await bankCommissionMonths(spreadsheetId, monthRows);
+  const result = await bankCommissionMonths(spreadsheetId, monthRows, {
+    refresh: overwrite ? months : [],
+  });
   console.log(
-    `[CommissionSummary] Done — ${result.newMonths.length ? `banked ${result.newMonths.join(", ")}` : "nothing new to bank"}.`,
+    `[CommissionSummary] Done — banked ${result.newMonths.join(", ") || "nothing new"}` +
+      (result.refreshed?.length ? `; replaced ${result.refreshed.join(", ")}` : "") + ".",
   );
   return result;
 }
@@ -82,7 +87,10 @@ if (require.main === module) {
     process.exit(1);
   }
   const arg = process.argv.slice(2).find((a) => !a.startsWith("--"));
-  backfillCommissionSummary(sheetId, { from: arg || DEFAULT_FROM })
+  backfillCommissionSummary(sheetId, {
+    from: arg || DEFAULT_FROM,
+    overwrite: process.argv.includes("--overwrite"),
+  })
     .then(() => process.exit(0))
     .catch((err) => {
       console.error(`[CommissionSummary] Failed: ${err.message}`);

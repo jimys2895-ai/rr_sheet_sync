@@ -22,6 +22,7 @@ const {
   applyCellDropdown,
   applyFilterDropdownCell,
   stampLastSynced,
+  syncBanding,
 } = require("./sheets");
 
 const ALL_COMMISSION_CURRENT_TAB = "All Cur";
@@ -210,8 +211,12 @@ function filterRowsByCurrentDeliveryMonth(rows) {
   return filtered;
 }
 
-function filterRowsByPreviousDeliveryMonth(rows) {
-  const { start, end } = previousMonthDateRange();
+// `range` is passed in by the sync so the rows and the Summary label are decided from ONE moment. Left to
+// call previousMonthDateRange() itself, a run that straddles midnight on the 1st takes last month's rows
+// before midnight and labels them as the new previous month after it — which is exactly how September's
+// Summary row came to hold August's numbers.
+function filterRowsByPreviousDeliveryMonth(rows, range = previousMonthDateRange()) {
+  const { start, end } = range;
   const filtered = filterRowsByDateRange(rows, start, end);
   console.log(
     `[InvoiceSent] Previous delivery month (${start} → ${end} ${REPORT_TIMEZONE}): ${filtered.length} of ${rows.length} leg row(s)`,
@@ -1022,9 +1027,19 @@ function closedMonthsSince(fromMonth) {
   return months;
 }
 
-// Banks any number of months in one write. `monthRows` maps "YYYY-MM" to that month's leg rows; a month
-// already on the tab is skipped untouched, which is what makes both this and the cron safe to re-run.
-async function bankCommissionMonths(spreadsheetId, monthRows) {
+// Banks any number of months in one write. `monthRows` maps "YYYY-MM" to that month's leg rows.
+//
+// A month already on the tab is left untouched UNLESS it is named in `refresh`, in which case its rows
+// are recomputed and replaced. The cron refreshes the month currently on the Previous tabs on every run,
+// so late invoices and corrections keep flowing into it; once it drops off Previous it is no longer
+// refreshed and stays locked at its final figures. Freezing it the moment it closed — the original rule —
+// captured whatever the numbers happened to be on the 1st and missed everything invoiced afterwards.
+//
+// A refresh that recomputes NO rows keeps the existing ones: an empty result is far more likely to be a
+// failed or short fetch than a month that genuinely had nothing invoiced, and wiping a month on the
+// strength of one is not a trade worth making.
+async function bankCommissionMonths(spreadsheetId, monthRows, { refresh = [] } = {}) {
+  const refreshSet = new Set(refresh);
   const columns = buildSummaryColumns();
   const month = [...monthRows.keys()].sort().join(", ") || previousMonthKey();
 
@@ -1071,15 +1086,22 @@ async function bankCommissionMonths(spreadsheetId, monthRows) {
   const banked = new Set(existing.map((r) => r.month));
   const added = [];
   const newMonths = [];
+  const refreshed = [];
   const skipped = [];
+  const replace = new Set();
   for (const key of [...monthRows.keys()].sort()) {
-    if (banked.has(key)) { skipped.push(key); continue; }
+    const isRefresh = refreshSet.has(key) && banked.has(key);
+    if (banked.has(key) && !isRefresh) { skipped.push(key); continue; }
     const repRows = summarizeRowsByRep(monthRows.get(key) ?? [], key);
-    if (!repRows.length) continue; // a month with no invoiced legs banks nothing rather than a blank row
+    if (!repRows.length) {
+      if (isRefresh) skipped.push(key); // keep what is banked rather than wipe it on an empty fetch
+      continue; // a month with no invoiced legs banks nothing rather than a blank row
+    }
     added.push(...repRows);
-    newMonths.push(key);
+    if (isRefresh) { replace.add(key); refreshed.push(key); } else newMonths.push(key);
   }
-  const all = [...existing, ...added].sort(
+  const kept = existing.filter((r) => !replace.has(r.month));
+  const all = [...kept, ...added].sort(
     (a, b) => (a.month === b.month ? b.cad - a.cad : b.month.localeCompare(a.month)),
   );
 
@@ -1090,21 +1112,40 @@ async function bankCommissionMonths(spreadsheetId, monthRows) {
   await writeToSheetWithRetry(spreadsheetId, COMMISSION_SUMMARY_TAB, all, {
     columns, headerRow: SUMMARY_HEADER_ROW,
   });
+  // Alternating row shading, sized to header + data + totals so the stripes stop at the last row. The
+  // band is rebuilt every write because the row count grows a month at a time. Cosmetic, so a failure
+  // here is logged and never fails the sync.
+  try {
+    await syncBanding(spreadsheetId, {
+      sourceTab: ALL_COMMISSION_CURRENT_TAB,
+      tabs: [{
+        tabName: COMMISSION_SUMMARY_TAB,
+        rowCount: all.length + 2,
+        columnCount: columns.length,
+        startRowIndex: SUMMARY_HEADER_ROW - 1,
+      }],
+    });
+  } catch (err) {
+    console.warn(`[InvoiceSent]   ${COMMISSION_SUMMARY_TAB}: could not apply row shading (${err.message}).`);
+  }
   const total = new Set(all.map((r) => r.month)).size;
   console.log(
     `[InvoiceSent]   ${COMMISSION_SUMMARY_TAB}: ${total} month(s) banked` +
-      (newMonths.length ? `, added ${newMonths.join(", ")} (${added.length} rep row(s))` : "") +
-      (skipped.length ? `, ${skipped.join(", ")} already banked` : "") +
+      (newMonths.length ? `, added ${newMonths.join(", ")}` : "") +
+      (refreshed.length ? `, refreshed ${refreshed.join(", ")}` : "") +
+      (skipped.length ? `, ${skipped.join(", ")} unchanged` : "") +
       ` → ${all.length} rows.`,
   );
-  return { added: added.length, newMonths, months: total };
+  return { added: added.length, newMonths, refreshed, months: total };
 }
 
-// What the cron calls: bank the single month that has just closed.
-async function updateCommissionSummary(spreadsheetId, previousRows) {
+// What the cron calls: bank — and keep refreshing — the month currently on the Previous tabs. `monthKey`
+// comes from the same range the rows were filtered by; see filterRowsByPreviousDeliveryMonth.
+async function updateCommissionSummary(spreadsheetId, previousRows, monthKey = previousMonthKey()) {
   return bankCommissionMonths(
     spreadsheetId,
-    new Map([[previousMonthKey(), previousRows]]),
+    new Map([[monthKey, previousRows]]),
+    { refresh: [monthKey] },
   );
 }
 
@@ -1197,12 +1238,12 @@ async function syncInvoiceSentReport(spreadsheetId) {
   // Both months read the SAME wide row set. The current month used to read the narrow monthly fetch,
   // which is what made orders drop off it while the previous month kept them.
   const monthlyRows = filterRowsByCurrentDeliveryMonth(extendedLegRowsAll);
-  const previousRows = filterRowsByPreviousDeliveryMonth(extendedLegRowsAll);
+  const previousRows = filterRowsByPreviousDeliveryMonth(extendedLegRowsAll, prevRange);
 
   await writeReportTabs(spreadsheetId, monthlyRows, previousRows);
   // Bank the closed month before the tab tidy-up, so the Summary exists by the time order is applied.
   await sleep(4000);
-  await updateCommissionSummary(spreadsheetId, previousRows);
+  await updateCommissionSummary(spreadsheetId, previousRows, String(prevRange.start).slice(0, 7));
 
   await removeUnwantedOpsSheets(spreadsheetId, COMMISSION_SHEET_TAB_ORDER);
   await reorderSheets(spreadsheetId, COMMISSION_SHEET_TAB_ORDER);
