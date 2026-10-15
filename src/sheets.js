@@ -718,9 +718,10 @@ const DEFAULT_BANDING_ROW_PROPERTIES = {
 // tabs: [{ tabName, rowCount, columnCount }] — rowCount is the full written block (header + data +
 // totals), or 0 for a tab with no data (which gets no stripes at all). Pass `palette` to force an
 // explicit header/band/footer colour set (e.g. the trip-history sheet's blue) instead of copying a
-// source tab or falling back to the grey default. `fallbackPalette` replaces the grey default for when
-// the source tab has no banding of its own.
-async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, fallbackPalette }) {
+// source tab or falling back to the grey default. `keepOwnColors` makes each tab its own template: a tab
+// that already has banding keeps its colours — so a choice made in Format → Alternating colors survives
+// the rebuild — and only a tab with none gets the source / default palette.
+async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, keepOwnColors = false }) {
   if (!tabs?.length) return;
   await withGoogleRetry(async () => {
     const sheets = await getSheetsClient();
@@ -738,23 +739,24 @@ async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, fallbackPa
     const rowProperties = palette
       ? palette
       : usingDefault
-        ? fallbackPalette ?? DEFAULT_BANDING_ROW_PROPERTIES
+        ? DEFAULT_BANDING_ROW_PROPERTIES
         : sanitizeBandingRowProperties(template.rowProperties);
-    const defaultLabel = fallbackPalette ? 'fallback palette' : 'built-in default palette';
-    if (usingDefault) {
+    if (usingDefault && sourceTab) {
       console.log(
-        `[Sheets] Banding: "${sourceTab}" has no "Alternating colors" of its own — applying the ${defaultLabel}.`,
+        `[Sheets] Banding: "${sourceTab}" has no "Alternating colors" of its own — applying the built-in default palette.`,
       );
     }
 
     const requests = [];
     let striped = 0;
+    let kept = 0;
     // startRowIndex lets a tab keep rows above the table out of the band — the Summary tabs put an
     // editable "OO Cut" config cell on row 1, which must not be painted as part of the striped table.
     for (const { tabName, rowCount, columnCount, startRowIndex = 0 } of tabs) {
       const target = findSheetByTitle(all, tabName);
       if (!target) continue;
       const sheetId = target.properties.sheetId;
+      const own = keepOwnColors && !palette ? target.bandedRanges?.[0]?.rowProperties : null;
 
       // Drop whatever band is there, then re-add one sized to this tab's data.
       for (const band of target.bandedRanges ?? []) {
@@ -772,11 +774,12 @@ async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, fallbackPa
               startColumnIndex: 0,
               endColumnIndex: columnCount,
             },
-            rowProperties,
+            rowProperties: own ? sanitizeBandingRowProperties(own) : rowProperties,
           },
         },
       });
       striped++;
+      if (own) kept++;
     }
 
     if (requests.length === 0) return;
@@ -784,10 +787,11 @@ async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, fallbackPa
     const paletteLabel = palette
       ? 'explicit palette'
       : usingDefault
-        ? defaultLabel
+        ? 'built-in default palette'
         : `template from "${sourceTab}"`;
+    const keptLabel = keepOwnColors ? `; ${kept} kept their own colours` : '';
     console.log(
-      `[Sheets] Banding: alternating colors sized to the data on ${striped} tab(s) (${paletteLabel}).`,
+      `[Sheets] Banding: alternating colors sized to the data on ${striped} tab(s) (${paletteLabel}${keptLabel}).`,
     );
   }, 'sync banding');
 }

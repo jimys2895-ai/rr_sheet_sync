@@ -910,6 +910,7 @@ async function writeCommissionLookupTab(spreadsheetId, periodRows, filters) {
     columns: REPORT_COLUMNS,
     headerRow: LOOKUP_HEADER_ROW,
   });
+  return filtered.length;
 }
 
 
@@ -931,20 +932,6 @@ const SUMMARY_COST_HEADER = "Total Carrier Cost";
 const SUMMARY_MARGIN_HEADER = "Margin $";
 const SUMMARY_PCT_HEADER = "Margin %";
 const SUMMARY_HEADER_ROW = 1;
-// Same palette as the Trip History sheet: blue header, white / light-blue rows, blue totals line.
-const bandRgb = (hex) => ({
-  rgbColor: {
-    red: parseInt(hex.slice(1, 3), 16) / 255,
-    green: parseInt(hex.slice(3, 5), 16) / 255,
-    blue: parseInt(hex.slice(5, 7), 16) / 255,
-  },
-});
-const SUMMARY_BANDING = {
-  headerColorStyle: bandRgb('#5b95f9'),
-  firstBandColorStyle: bandRgb('#ffffff'),
-  secondBandColorStyle: bandRgb('#e8f0fe'),
-  footerColorStyle: bandRgb('#acc9fe'),
-};
 
 const summaryColLetter = (i) => String.fromCharCode(65 + i);
 
@@ -1131,11 +1118,9 @@ async function bankCommissionMonths(spreadsheetId, monthRows, { refresh = [] } =
   // here is logged and never fails the sync.
   try {
     await syncBanding(spreadsheetId, {
-      // The Summary is its own colour template: whatever is on it now — including colours picked in
-      // Format → Alternating colors — survives the rebuild. A tab with none gets the Trip History blue;
-      // the grey default's #f3f3f3 stripe was too faint to see.
-      sourceTab: COMMISSION_SUMMARY_TAB,
-      fallbackPalette: SUMMARY_BANDING,
+      // The Summary keeps whatever colours it has — including ones picked in Format → Alternating
+      // colors. A tab with none gets the grey default, the same look as the outbound / inbound sheets.
+      keepOwnColors: true,
       tabs: [{
         tabName: COMMISSION_SUMMARY_TAB,
         rowCount: all.length + 2,
@@ -1194,6 +1179,32 @@ async function writeReportTabs(spreadsheetId, currentRows, previousRows) {
     console.log(`[InvoiceSent]   ${name}: ${tabRows.length} leg row(s)`);
     if (i < tabs.length - 1) await sleep(TAB_WRITE_DELAY_MS);
   }
+  return tabs.map(({ name, records }) => ({ name, rowCount: records.length }));
+}
+
+// Alternating row shading on the Lookup and every Current / Previous tab, sized to header + data + totals
+// so the stripes stop at the last row. Each tab keeps the colours it already has; one with none gets the
+// grey default, the same look as the outbound / inbound sheets. Cosmetic, so a failure is logged and
+// never fails the sync.
+async function shadeCommissionTabs(spreadsheetId, reportTabs, lookupRowCount) {
+  const columnCount = REPORT_COLUMNS.length;
+  const bandRows = (n) => (n > 0 ? n + 2 : 0); // header + data rows + totals row
+  const tabs = reportTabs.map(({ name, rowCount }) => ({ tabName: name, rowCount: bandRows(rowCount), columnCount }));
+  // The Lookup table sits below its filter panel. Skipped when Refresh lookup=OFF left its data as it was.
+  if (lookupRowCount != null) {
+    tabs.unshift({
+      tabName: COMMISSION_LOOKUP_TAB,
+      rowCount: bandRows(lookupRowCount),
+      columnCount,
+      startRowIndex: LOOKUP_HEADER_ROW - 1,
+    });
+  }
+  await sleep(TAB_WRITE_DELAY_MS);
+  try {
+    await syncBanding(spreadsheetId, { tabs, keepOwnColors: true });
+  } catch (err) {
+    console.warn(`[InvoiceSent]   could not apply row shading to the commission tabs (${err.message}).`);
+  }
 }
 
 async function syncInvoiceSentReport(spreadsheetId) {
@@ -1233,6 +1244,7 @@ async function syncInvoiceSentReport(spreadsheetId) {
   );
 
   let lookupPeriodRows = [];
+  let lookupRowCount = null;
   if (lookupFilters.refreshLookup) {
     lookupPeriodRows = filterRowsByDateRange(
       extendedLegRowsAll,
@@ -1242,7 +1254,7 @@ async function syncInvoiceSentReport(spreadsheetId) {
     console.log(
       `[InvoiceSent] Commission Lookup delivery period: ${lookupPeriodRows.length} of ${extendedLegRowsAll.length} leg row(s)`,
     );
-    await writeCommissionLookupTab(
+    lookupRowCount = await writeCommissionLookupTab(
       spreadsheetId,
       lookupPeriodRows,
       lookupFilters,
@@ -1258,7 +1270,8 @@ async function syncInvoiceSentReport(spreadsheetId) {
   const monthlyRows = filterRowsByCurrentDeliveryMonth(extendedLegRowsAll);
   const previousRows = filterRowsByPreviousDeliveryMonth(extendedLegRowsAll, prevRange);
 
-  await writeReportTabs(spreadsheetId, monthlyRows, previousRows);
+  const reportTabs = await writeReportTabs(spreadsheetId, monthlyRows, previousRows);
+  await shadeCommissionTabs(spreadsheetId, reportTabs, lookupRowCount);
   // Bank the closed month before the tab tidy-up, so the Summary exists by the time order is applied.
   await sleep(4000);
   await updateCommissionSummary(spreadsheetId, previousRows, String(prevRange.start).slice(0, 7));
