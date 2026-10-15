@@ -718,8 +718,9 @@ const DEFAULT_BANDING_ROW_PROPERTIES = {
 // tabs: [{ tabName, rowCount, columnCount }] — rowCount is the full written block (header + data +
 // totals), or 0 for a tab with no data (which gets no stripes at all). Pass `palette` to force an
 // explicit header/band/footer colour set (e.g. the trip-history sheet's blue) instead of copying a
-// source tab or falling back to the grey default.
-async function syncBanding(spreadsheetId, { sourceTab, tabs, palette }) {
+// source tab or falling back to the grey default. `fallbackPalette` replaces the grey default for when
+// the source tab has no banding of its own.
+async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, fallbackPalette }) {
   if (!tabs?.length) return;
   await withGoogleRetry(async () => {
     const sheets = await getSheetsClient();
@@ -737,11 +738,12 @@ async function syncBanding(spreadsheetId, { sourceTab, tabs, palette }) {
     const rowProperties = palette
       ? palette
       : usingDefault
-        ? DEFAULT_BANDING_ROW_PROPERTIES
+        ? fallbackPalette ?? DEFAULT_BANDING_ROW_PROPERTIES
         : sanitizeBandingRowProperties(template.rowProperties);
+    const defaultLabel = fallbackPalette ? 'fallback palette' : 'built-in default palette';
     if (usingDefault) {
       console.log(
-        `[Sheets] Banding: "${sourceTab}" has no "Alternating colors" of its own — applying the built-in default palette.`,
+        `[Sheets] Banding: "${sourceTab}" has no "Alternating colors" of its own — applying the ${defaultLabel}.`,
       );
     }
 
@@ -782,7 +784,7 @@ async function syncBanding(spreadsheetId, { sourceTab, tabs, palette }) {
     const paletteLabel = palette
       ? 'explicit palette'
       : usingDefault
-        ? 'built-in default palette'
+        ? defaultLabel
         : `template from "${sourceTab}"`;
     console.log(
       `[Sheets] Banding: alternating colors sized to the data on ${striped} tab(s) (${paletteLabel}).`,

@@ -931,6 +931,20 @@ const SUMMARY_COST_HEADER = "Total Carrier Cost";
 const SUMMARY_MARGIN_HEADER = "Margin $";
 const SUMMARY_PCT_HEADER = "Margin %";
 const SUMMARY_HEADER_ROW = 1;
+// Same palette as the Trip History sheet: blue header, white / light-blue rows, blue totals line.
+const bandRgb = (hex) => ({
+  rgbColor: {
+    red: parseInt(hex.slice(1, 3), 16) / 255,
+    green: parseInt(hex.slice(3, 5), 16) / 255,
+    blue: parseInt(hex.slice(5, 7), 16) / 255,
+  },
+});
+const SUMMARY_BANDING = {
+  headerColorStyle: bandRgb('#5b95f9'),
+  firstBandColorStyle: bandRgb('#ffffff'),
+  secondBandColorStyle: bandRgb('#e8f0fe'),
+  footerColorStyle: bandRgb('#acc9fe'),
+};
 
 const summaryColLetter = (i) => String.fromCharCode(65 + i);
 
@@ -1117,7 +1131,11 @@ async function bankCommissionMonths(spreadsheetId, monthRows, { refresh = [] } =
   // here is logged and never fails the sync.
   try {
     await syncBanding(spreadsheetId, {
-      sourceTab: ALL_COMMISSION_CURRENT_TAB,
+      // The Summary is its own colour template: whatever is on it now — including colours picked in
+      // Format → Alternating colors — survives the rebuild. A tab with none gets the Trip History blue;
+      // the grey default's #f3f3f3 stripe was too faint to see.
+      sourceTab: COMMISSION_SUMMARY_TAB,
+      fallbackPalette: SUMMARY_BANDING,
       tabs: [{
         tabName: COMMISSION_SUMMARY_TAB,
         rowCount: all.length + 2,
