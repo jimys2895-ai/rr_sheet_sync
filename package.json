@@ -16,6 +16,7 @@
     "sync:ops": "node -e \"process.env.SYNC_SCOPE='ops'; require('./src/sync').runSync().then(() => { console.log('Done'); process.exit(0); }).catch(e => { console.error(e.message); process.exit(1); })\"",
     "sync:exchange-rates": "node src/exchange-rates.js",
     "sync:trip-history": "node src/trip-history.js",
+    "sync:dispatcher-activity": "node src/dispatcher-activity.js",
     "trip-history:backfill": "node src/trip-history-backfill.js",
     "trip-history:dates": "node src/trip-history-dates.js",
     "trip-history:repair": "node src/trip-history-repair.js",

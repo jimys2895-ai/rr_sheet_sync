@@ -14,6 +14,7 @@ unattended as **Render Cron Jobs**.
 - [Force Cancel (ops sheet)](#force-cancel-ops-sheet)
 - [Force Delete Manifest (ops sheet)](#force-delete-manifest-ops-sheet)
 - [JO Report (commission sheet)](#jo-report-commission-sheet)
+- [Dispatcher activity](#dispatcher-activity)
 - [Trip history (completed-trip archive)](#trip-history-completed-trip-archive)
 - [Exchange rates (RoseRocket)](#exchange-rates-roserocket)
 - [How it works](#how-it-works)
@@ -38,6 +39,7 @@ unattended as **Render Cron Jobs**.
 | **Ops**        | `GOOGLE_OPS_SHEET_ID`        | Force Deliver + Force Cancel + Force Delete Manifest queues              |
 | **Commission** | `GOOGLE_COMMISSION_SHEET_ID` | JO Report — All Commission Current/Previous, rep tabs, Commission Lookup |
 | **Trip history** | `GOOGLE_TRIP_HISTORY_SHEET_ID` | Archive of completed round trips — O/B, I/B, Rounder                  |
+| **Dispatcher activity** | `GOOGLE_DISPATCHER_ACTIVITY_SHEET_ID` | Orders picked up in the last 60 days — CSR, dispatcher, sales rep, who created them |
 
 The **Inbound** sheet is identical to the Outbound sheet except it lists orders **originating** in the
 USA and its nickname tabs trigger on the **`US I/B`** tag. Share **all** spreadsheets with the Google
@@ -382,6 +384,31 @@ already stores in CAD — a USD manifest's leg cost is the converted CAD amount,
 
 ```bash
 npm run invoice-sent
+```
+
+## Dispatcher activity
+
+Spreadsheet: `GOOGLE_DISPATCHER_ACTIVITY_SHEET_ID`. Tab: **data**. Cron: `roserocket-dispatcher-activity`,
+daily at 11:00 UTC.
+
+Every order in the CE Logistics order list — including the CE Trucking (`CET-*`) loads it books — whose
+requested pick-up falls in the last 60 days (Eastern, today included), newest first. The tab is rebuilt
+from scratch each run, so anything typed into it is replaced.
+
+| Column                | Source                                                                         |
+| --------------------- | ------------------------------------------------------------------------------ |
+| ID, Status            | Order `full_id`, `order_state_id`                                              |
+| Customer Name         | Same as the commission sheet's Customer                                        |
+| Pick Up Requested     | Order `pickup_start_at`, Eastern date                                          |
+| CSR                   | Order `csr_name`                                                               |
+| Dispatcher            | Same as the commission sheet: the final delivery manifest's dispatcher         |
+| Sales Rep             | Same as the commission sheet's **On commission**                               |
+| Order Created Date    | Order `created_at` — for an order that began as a quick quote, when the quote was made |
+| Who Created the Order | The user in the order's `user_id` (RoseRocket has no API for the Activity log) |
+
+```bash
+npm run sync:dispatcher-activity              # rebuild the sheet
+npm run sync:dispatcher-activity -- --dry-run # build the rows and compare with the sheet; write nothing
 ```
 
 ## Trip history (completed-trip archive)

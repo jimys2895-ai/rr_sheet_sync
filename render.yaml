@@ -1,4 +1,4 @@
-# Render Blueprint — 6 cron jobs (scheduled sync) + 1 web service (outbound/inbound force refresh).
+# Render Blueprint — 7 cron jobs (scheduled sync) + 1 web service (outbound/inbound force refresh).
 # Deploy: push this repo to GitHub, then in Render → New → Blueprint → select the repo.
 # Blueprint spec: https://render.com/docs/blueprint-spec   ·   Cron syntax: https://crontab.guru
 #
@@ -87,4 +87,17 @@ services:
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /health
+    autoDeploy: true
+
+  - type: cron
+    name: roserocket-dispatcher-activity
+    runtime: node
+    plan: starter
+    region: oregon
+    # Daily at 11:00 UTC — 06:00 ET in winter, 07:00 ET in summer. Rebuilds the Dispatcher-activity sheet:
+    # every order with a requested pick-up in the last 60 days, with CSR, dispatcher, sales rep and who
+    # first made it. :00 is outbound's minute, but outbound reads its own sheet and this writes one tab.
+    schedule: "0 11 * * *"
+    buildCommand: npm ci
+    startCommand: npm run sync:dispatcher-activity
     autoDeploy: true

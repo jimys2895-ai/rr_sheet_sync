@@ -703,6 +703,11 @@ function sanitizeBandingRowProperties(rowProperties = {}) {
   return out;
 }
 
+// Banding colours minus the footer (totals-row) shade.
+function withoutFooter({ footerColor, footerColorStyle, ...rest }) {
+  return rest;
+}
+
 // The default "Alternating colors" palette — a shaded header row, white / light-grey striped body, and a
 // shaded footer (totals) row. Used when a master tab has no banding of its own, so a BRAND-NEW sheet gets
 // the correct header/footer/row shading automatically instead of a flat, unstyled grid. Matches the
@@ -715,8 +720,9 @@ const DEFAULT_BANDING_ROW_PROPERTIES = {
   footerColorStyle: { rgbColor: { red: 0.87058824, green: 0.87058824, blue: 0.87058824 } },
 };
 
-// tabs: [{ tabName, rowCount, columnCount }] — rowCount is the full written block (header + data +
-// totals), or 0 for a tab with no data (which gets no stripes at all). Pass `palette` to force an
+// tabs: [{ tabName, rowCount, columnCount, startRowIndex, footer }] — rowCount is the full written block
+// (header + data + totals), or 0 for a tab with no data (which gets no stripes at all). `footer: false`
+// is for a table with no totals row, whose last data row must not be painted as one. Pass `palette` to force an
 // explicit header/band/footer colour set (e.g. the trip-history sheet's blue) instead of copying a
 // source tab or falling back to the grey default. `keepOwnColors` makes each tab its own template: a tab
 // that already has banding keeps its colours — so a choice made in Format → Alternating colors survives
@@ -752,11 +758,12 @@ async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, keepOwnCol
     let kept = 0;
     // startRowIndex lets a tab keep rows above the table out of the band — the Summary tabs put an
     // editable "OO Cut" config cell on row 1, which must not be painted as part of the striped table.
-    for (const { tabName, rowCount, columnCount, startRowIndex = 0 } of tabs) {
+    for (const { tabName, rowCount, columnCount, startRowIndex = 0, footer = true } of tabs) {
       const target = findSheetByTitle(all, tabName);
       if (!target) continue;
       const sheetId = target.properties.sheetId;
       const own = keepOwnColors && !palette ? target.bandedRanges?.[0]?.rowProperties : null;
+      const tabColors = own ? sanitizeBandingRowProperties(own) : rowProperties;
 
       // Drop whatever band is there, then re-add one sized to this tab's data.
       for (const band of target.bandedRanges ?? []) {
@@ -774,7 +781,7 @@ async function syncBanding(spreadsheetId, { sourceTab, tabs, palette, keepOwnCol
               startColumnIndex: 0,
               endColumnIndex: columnCount,
             },
-            rowProperties: own ? sanitizeBandingRowProperties(own) : rowProperties,
+            rowProperties: footer ? tabColors : withoutFooter(tabColors),
           },
         },
       });

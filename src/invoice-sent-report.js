@@ -431,6 +431,24 @@ function formatOrderStatus(order) {
     .join(" ");
 }
 
+// "On commission" as every commission tab shows it: the order's commissionees, else its account manager.
+function resolveOnCommission(order, commissionees) {
+  return (
+    formatCommissionees(commissionees) ||
+    String(order.account_manager_name ?? "").trim()
+  );
+}
+
+// The dispatcher on the load's final delivery manifest, falling back to the order's own.
+function resolveDispatcher(order, finalTrip) {
+  return String(
+    finalTrip?.dispatcher_user_name ??
+      order.dispatcher_user_name ??
+      order.dispatch_name ??
+      "",
+  ).trim();
+}
+
 function normalizePersonName(name) {
   return String(name ?? "")
     .trim()
@@ -543,9 +561,7 @@ async function enrichOrder(api, order, tripCache) {
   const { accessorialNames, accessorialTotal } = parseAccessorials(quote);
   const finMap = legFinancialsMap(order);
   const customer = resolveCustomerName(order);
-  const onCommission =
-    formatCommissionees(commissionees) ||
-    String(order.account_manager_name ?? "").trim();
+  const onCommission = resolveOnCommission(order, commissionees);
   const csr = String(order.csr_name ?? "").trim();
   const orderStatus = formatOrderStatus(order);
 
@@ -590,12 +606,7 @@ async function enrichOrder(api, order, tripCache) {
     : "";
 
   const finalTrip = finalLeg ? trips[legs.indexOf(finalLeg)] : null;
-  const dispatcher = String(
-    finalTrip?.dispatcher_user_name ??
-      order.dispatcher_user_name ??
-      order.dispatch_name ??
-      "",
-  ).trim();
+  const dispatcher = resolveDispatcher(order, finalTrip);
 
   return [
     {
@@ -1306,6 +1317,10 @@ module.exports = {
   fetchInvoiceSentOrders,
   buildInvoiceSentRows,
   filterRowsByDateRange,
+  resolveCustomerName,
+  resolveOnCommission,
+  resolveDispatcher,
+  finalDeliveryLeg,
   COMMISSION_SUMMARY_TAB,
   TAB_NAME,
   ALL_COMMISSION_CURRENT_TAB,
