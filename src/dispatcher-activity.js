@@ -124,6 +124,9 @@ async function userName(userId, orgUrl, cache) {
   return cache.get(userId);
 }
 
+// RoseRocket names carry stray runs of spaces ("Karen  Huizinga").
+const tidy = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+
 async function buildRow({ order, orgUrl }, caches) {
   const api = await client(orgUrl);
   const [legs, commissionees, createdBy] = await Promise.all([
@@ -136,11 +139,11 @@ async function buildRow({ order, orgUrl }, caches) {
   return {
     id: String(order.full_id ?? '').trim(),
     status: String(order.order_state_id ?? '').trim(),
-    customer: resolveCustomerName(order).replace(/\s+/g, ' '),
+    customer: tidy(resolveCustomerName(order)),
     pickup: usDate(pickupDay(order)),
-    csr: String(order.csr_name ?? '').trim(),
-    dispatcher: resolveDispatcher(order, finalTrip),
-    salesRep: resolveOnCommission(order, commissionees),
+    csr: tidy(order.csr_name),
+    dispatcher: tidy(resolveDispatcher(order, finalTrip)),
+    salesRep: resolveOnCommission(order, commissionees).split('\n').map(tidy).join('\n'),
     created: usDate(easternDay(order.created_at)),
     createdBy,
     sortKey: `${pickupDay(order)} ${order.created_at ?? ''}`,
