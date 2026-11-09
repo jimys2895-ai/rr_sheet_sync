@@ -81,7 +81,21 @@ function usDate(day) {
   return `${m}/${d}/${y}`;
 }
 
-const pickupDay = (order) => easternDay(order.pickup_start_at ?? order.pickup_end_at);
+// The requested pick-up is stored as the pick-up location's local wall time with no zone
+// ("2026-11-06T00:00:00"), so its date is taken as written — converting it shifts midnight pick-ups a
+// day back. A value that does carry a zone is read in the location's own.
+function pickupDay(order) {
+  const raw = String(order.pickup_start_at ?? order.pickup_end_at ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}/.test(raw) || raw.startsWith('0001-')) return '';
+  if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(raw)) return raw.slice(0, 10);
+  const d = new Date(raw);
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: order.from_timezone || TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d);
+}
+
+// Loads that never ran: the client's own list leaves out cancelled orders and quotes not yet booked.
+const EXCLUDED_STATES = new Set(['cancelled', 'canceled', 'quoted', 'draft']);
 const orgForOrder = (order) =>
   /^CET-/i.test(String(order.full_id ?? '')) && SYNC_ORG_URL ? SYNC_ORG_URL : CELOGISTICS_ORG_URL;
 
@@ -125,7 +139,7 @@ async function buildRow(order, caches) {
   return {
     id: String(order.full_id ?? '').trim(),
     status: String(order.order_state_id ?? '').trim(),
-    customer: resolveCustomerName(order),
+    customer: resolveCustomerName(order).replace(/\s+/g, ' '),
     pickup: usDate(pickupDay(order)),
     csr: String(order.csr_name ?? '').trim(),
     dispatcher: resolveDispatcher(order, finalTrip),
@@ -141,7 +155,7 @@ async function buildRows() {
   const orders = await fetchOrdersForOrg(CELOGISTICS_ORG_URL, { sinceDays: CREATED_LOOKBACK_DAYS });
   const inWindow = orders.filter((o) => {
     const day = pickupDay(o);
-    return o.full_id && day >= first && day <= last;
+    return o.full_id && day >= first && day <= last && !EXCLUDED_STATES.has(String(o.order_state_id ?? '').toLowerCase());
   });
   console.log(`[DispatcherActivity] ${inWindow.length} of ${orders.length} order(s) have a pick-up between ${first} and ${last}.`);
 
@@ -222,7 +236,7 @@ async function runDispatcherActivity({ dryRun = false } = {}) {
   return rows;
 }
 
-module.exports = { runDispatcherActivity, buildRows, windowDays, usDate, easternDay };
+module.exports = { runDispatcherActivity, buildRows, windowDays, usDate, easternDay, pickupDay };
 
 if (require.main === module) {
   runDispatcherActivity({ dryRun: process.argv.includes('--dry-run') })
