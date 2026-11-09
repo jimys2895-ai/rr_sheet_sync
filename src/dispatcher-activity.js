@@ -2,9 +2,9 @@
 // handled it — CSR, dispatcher, sales rep — and when and by whom it was first made. Rebuilt once a day
 // by its own cron job. The "data" tab is replaced wholesale, so nothing typed into it survives a run.
 //
-// Rows come from the CE Logistics org's order list, which also carries the CE Trucking (CET-*) loads
-// CE Logistics books — the client's own export of this list included them. Each order's legs, manifest
-// and commissionees are read from the org the order belongs to.
+// Rows come from both orgs' order lists — CE Logistics and all of CE Trucking. Neither login can see the
+// other org's orders, so each order's legs, manifest and commissionees are read with the login of the
+// org it was listed under.
 //
 // Dispatcher and Sales Rep are exactly the Commission Sheet's "Dispatcher" and "On commission".
 // "First made" is the order's own created_at / user_id: an order that starts life as a quick quote is
@@ -96,8 +96,6 @@ function pickupDay(order) {
 
 // Loads that never ran: the client's own list leaves out cancelled orders and quotes not yet booked.
 const EXCLUDED_STATES = new Set(['cancelled', 'canceled', 'quoted', 'draft']);
-const orgForOrder = (order) =>
-  /^CET-/i.test(String(order.full_id ?? '')) && SYNC_ORG_URL ? SYNC_ORG_URL : CELOGISTICS_ORG_URL;
 
 // A user's name, read with a plain request: our API client treats a 403 as a dead token and logs in
 // again, and a user who belongs to the other org answers 403. Tries the order's own org first.
@@ -126,8 +124,7 @@ async function userName(userId, orgUrl, cache) {
   return cache.get(userId);
 }
 
-async function buildRow(order, caches) {
-  const orgUrl = orgForOrder(order);
+async function buildRow({ order, orgUrl }, caches) {
   const api = await client(orgUrl);
   const [legs, commissionees, createdBy] = await Promise.all([
     fetchOrderLegs(api, order.id).catch(() => []),
@@ -152,19 +149,26 @@ async function buildRow(order, caches) {
 
 async function buildRows() {
   const { first, last } = windowDays();
-  const orders = await fetchOrdersForOrg(CELOGISTICS_ORG_URL, { sinceDays: CREATED_LOOKBACK_DAYS });
-  const inWindow = orders.filter((o) => {
-    const day = pickupDay(o);
-    return o.full_id && day >= first && day <= last && !EXCLUDED_STATES.has(String(o.order_state_id ?? '').toLowerCase());
-  });
-  console.log(`[DispatcherActivity] ${inWindow.length} of ${orders.length} order(s) have a pick-up between ${first} and ${last}.`);
+  const inWindow = [];
+  const seen = new Set();
+  for (const orgUrl of [CELOGISTICS_ORG_URL, SYNC_ORG_URL].filter((o, i, a) => o && a.indexOf(o) === i)) {
+    const orders = await fetchOrdersForOrg(orgUrl, { sinceDays: CREATED_LOOKBACK_DAYS });
+    const kept = orders.filter((o) => {
+      const day = pickupDay(o);
+      return o.full_id && !seen.has(o.id) && day >= first && day <= last
+        && !EXCLUDED_STATES.has(String(o.order_state_id ?? '').toLowerCase());
+    });
+    kept.forEach((o) => seen.add(o.id));
+    inWindow.push(...kept.map((order) => ({ order, orgUrl })));
+    console.log(`[DispatcherActivity] ${new URL(orgUrl).hostname.split('.')[0]}: ${kept.length} of ${orders.length} order(s) have a pick-up between ${first} and ${last}.`);
+  }
 
   const caches = { trips: new Map(), users: new Map() };
   const rows = [];
   for (let i = 0; i < inWindow.length; i += CONCURRENCY) {
     const batch = inWindow.slice(i, i + CONCURRENCY);
-    const built = await Promise.all(batch.map((o) => buildRow(o, caches).catch((err) => {
-      console.warn(`[DispatcherActivity] Skipped ${o.full_id}: ${err.message}`);
+    const built = await Promise.all(batch.map((entry) => buildRow(entry, caches).catch((err) => {
+      console.warn(`[DispatcherActivity] Skipped ${entry.order.full_id}: ${err.message}`);
       return null;
     })));
     rows.push(...built.filter(Boolean));

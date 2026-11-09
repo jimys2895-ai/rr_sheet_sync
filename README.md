@@ -391,15 +391,15 @@ npm run invoice-sent
 Spreadsheet: `GOOGLE_DISPATCHER_ACTIVITY_SHEET_ID`. Tab: **data**. Cron: `roserocket-dispatcher-activity`,
 daily at 11:00 UTC.
 
-Every order in the CE Logistics order list — including the CE Trucking (`CET-*`) loads it books — whose
-requested pick-up falls in the last 60 days (Eastern, today included), newest first. The tab is rebuilt
+Every CE Logistics and CE Trucking order whose requested pick-up falls in the last 60 days (today
+included), newest first; cancelled orders and quotes not yet booked are left out. The tab is rebuilt
 from scratch each run, so anything typed into it is replaced.
 
 | Column                | Source                                                                         |
 | --------------------- | ------------------------------------------------------------------------------ |
 | ID, Status            | Order `full_id`, `order_state_id`                                              |
 | Customer Name         | Same as the commission sheet's Customer                                        |
-| Pick Up Requested     | Order `pickup_start_at`, Eastern date                                          |
+| Pick Up Requested     | Order `pickup_start_at` — local to the pick-up, so its date is taken as written |
 | CSR                   | Order `csr_name`                                                               |
 | Dispatcher            | Same as the commission sheet: the final delivery manifest's dispatcher         |
 | Sales Rep             | Same as the commission sheet's **On commission**                               |
