@@ -77,7 +77,7 @@ add **Miles** and **RPM**):
 | **Skids**       | `total_skids`                                                                                                                                                                                                             |
 | **Feet**        | `total_linear_feet`                                                                                                                                                                                                       |
 | **Weight**      | `total_weight`                                                                                                                                                                                                            |
-| **Rate**        | Dispatched quote `freight_cost` in **CAD** (line-haul only; USD quotes converted via quote FX)                                                                                                                            |
+| **Rate**        | Dispatched quote freight **plus fuel** (`freight_cost` + `fuel_cost`, every fuel type) in **CAD** (USD quotes converted via quote FX). Accessorials are not included. RPM and OO Rev stay on the freight alone.                  |
 | **Customs**     | `order_tags` → names of customs tags on the order (whitelist in `sync.js`)                                                                                                                                                |
 | **Customer**    | `billing_org_name`                                                                                                                                                                                                        |
 | **Order ID**    | `full_id` (linked to the order)                                                                                                                                                                                           |
@@ -100,7 +100,7 @@ One row per nickname tab, with a totals row. Columns, left to right:
 | **Manifest ID** | Linked to the manifest when the lane is a single manifest |
 | **Skids / Feet / Weight** | Summed across the lane's orders |
 | **Actual** | Planner-entered footage, preserved across syncs (**inbound only**) |
-| **Rate / Miles / RPM** | The leg's figures |
+| **Rate / Miles / RPM** | The leg's figures — Rate includes fuel, RPM is freight ÷ miles |
 | **OO Rev / OO RPM** | The owner-operator share — filled in **only** for `OO` drivers |
 | **Rounder Rate / Miles / RPM** | The whole round trip (**inbound only**) |
 | **Rounder OO Rev / OO RPM** | Owner-operator share of the whole trip (**inbound only**) |
@@ -109,8 +109,9 @@ One row per nickname tab, with a totals row. Columns, left to right:
 #### OO Cut
 
 **Row 1 holds an editable `OO Cut` percentage** and the table header sits on row 2. Every **OO Rev** cell
-is a formula (`= Rate × $B$1`), so changing that one cell re-prices the whole tab instantly — no sync and
-no redeploy. The value is read back before each refresh and rewritten, so a manual edit survives; it
+is a formula — the leg's **freight** × `$B$1` (the fuel in Rate is not part of the cut), and
+`Rounder Rate × $B$1` for the whole trip — so changing that one cell re-prices the whole tab instantly —
+no sync and no redeploy. The value is read back before each refresh and rewritten, so a manual edit survives; it
 starts at **59%**, matching the trip-history sheet.
 
 #### Manifests dispatched to an outside carrier (inbound)
@@ -432,6 +433,14 @@ Each tab is a native Google **Table**, so every column filters and sorts, and th
 `SUBTOTAL` — filter to one driver and the totals become that driver's. Row 1 holds the editable **OO Cut**
 percentage; **OO Rev** / **OO RPM** are filled in only for owner-operators (**Type** = `OO`), read from
 RoseRocket's driver records.
+
+**Fuel.** On **O/B** and **I/B**, Revenue is the freight **plus fuel** for trips archived from 10 Nov 2026
+on (earlier rows keep the freight-only Revenue they were archived with). The fuel sits in a **hidden Fuel
+column** after Notes, and RPM and OO Rev are worked on Revenue − Fuel, so they stay on the freight — a
+hand-corrected Revenue still flows through, and an older row's blank Fuel counts as 0. By Driver and
+Compare carry matching hidden fuel columns so their RPMs are freight-only too. **Rounder** is unchanged:
+its Revenue is RoseRocket's own manifest revenue, which already includes fuel, and its OO Rev and RPM are
+worked on it as before. A backfill run archives older trips with fuel included.
 
 ### The By Driver tab
 

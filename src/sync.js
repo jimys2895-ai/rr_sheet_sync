@@ -214,10 +214,16 @@ function groupOrdersByManifestNickname(
     .map((name) => ({ name, records: groups.get(name) }));
 }
 
-function orderRate(order) {
+// Rate is the order's revenue: freight plus fuel (CAD). RPM and OO Rev stay on the freight alone.
+function orderFreight(order) {
   const freight = Number(order._freightRate);
-  if (Number.isFinite(freight) && freight > 0) return freight;
-  return "";
+  return Number.isFinite(freight) && freight > 0 ? freight : 0;
+}
+
+function orderRate(order) {
+  const fuel = Number(order._fuelRate);
+  const rate = orderFreight(order) + (Number.isFinite(fuel) && fuel > 0 ? fuel : 0);
+  return rate > 0 ? Math.round(rate * 100) / 100 : "";
 }
 
 // Sums a per-manifest numeric field once per unique manifest (so a lane spanning one manifest reports
@@ -382,15 +388,16 @@ function buildSheetColumns({
         getLabel: () => "",
         width: 80,
         format: "currency",
-        getTotalFormula: ({ totalsRow, colLetter, resolvedColumns }) => {
-          const rateIdx = resolvedColumns.findIndex((c) => c.header === "Rate");
+        // Freight-only, so it can't divide the Rate total (which includes fuel): the freight total is
+        // written into the formula, still over the live Miles cell.
+        getTotalFormula: ({ totalsRow, colLetter, resolvedColumns, records }) => {
           const milesIdx = resolvedColumns.findIndex(
             (c) => c.header === "Miles",
           );
-          if (rateIdx < 0 || milesIdx < 0) return "";
-          const rate = colLetter(rateIdx);
+          if (milesIdx < 0) return "";
+          const freight = Math.round(sumNumeric(records, orderFreight) * 100) / 100;
           const miles = colLetter(milesIdx);
-          return `=IF(${miles}${totalsRow}=0,"",${rate}${totalsRow}/${miles}${totalsRow})`;
+          return `=IF(${miles}${totalsRow}=0,"",${freight}/${miles}${totalsRow})`;
         },
       },
     );
@@ -550,10 +557,11 @@ function buildSummaryRecords(
     const skids = sumField(flats, "total_skids");
     const feet = sumField(flats, "total_linear_feet");
     const weight = sumField(flats, "total_weight");
-    const rate = sumNumeric(records, orderRate);
+    const rate = Math.round(sumNumeric(records, orderRate) * 100) / 100;
+    const freight = Math.round(sumNumeric(records, orderFreight) * 100) / 100;
     const miles =
       Number(uniqueManifestMilesTotal(records, manifestByOrderId)) || 0;
-    const rpm = miles > 0 ? Math.round((rate / miles) * 100) / 100 : "";
+    const rpm = miles > 0 ? Math.round((freight / miles) * 100) / 100 : "";
     // "Rounder" = the whole round-trip manifest, once per unique manifest: full miles and full revenue.
     const rounderMiles = Math.round(
       uniqueManifestFieldTotal(records, manifestByOrderId, "rounderMiles") * 10,
@@ -591,6 +599,7 @@ function buildSummaryRecords(
       feet: feet || "",
       weight: weight || "",
       rate: rate || "",
+      freight,
       miles: miles || "",
       rpm,
       // Keyed by manifest ID, so the note follows the manifest rather than the lane name.
@@ -651,13 +660,13 @@ const SUMMARY_COLUMNS = [
     width: 70,
     format: "currency",
     getTotalValue: ({ records }) => {
-      const totalRate = records.reduce((s, r) => s + (Number(r.rate) || 0), 0);
+      const totalFreight = records.reduce((s, r) => s + (Number(r.freight) || 0), 0);
       const totalMiles = records.reduce(
         (s, r) => s + (Number(r.miles) || 0),
         0,
       );
       if (totalMiles <= 0) return "";
-      return Math.round((totalRate / totalMiles) * 100) / 100;
+      return Math.round((totalFreight / totalMiles) * 100) / 100;
     },
   },
   // Planner-entered text AND fill colour, both preserved across refreshes and both keyed by Manifest ID
@@ -765,13 +774,16 @@ const isEffectiveOwnerOperator = (record, driverTypes, assumedTypes) =>
 // An OO Rev / OO RPM pair for one set of figures: the leg (Rate/Miles) or the whole trip (Rounder
 // Rate/Rounder Miles). Only owner-operators get values — a company driver's cells stay blank, exactly as
 // on the trip-history tabs, so the totals aren't inflated by drivers the cut doesn't apply to.
-function ooColumnPair({ revHeader, milesHeader, ooRevHeader, ooRpmHeader }) {
+// `baseOf` gives the amount the cut applies to when it isn't the revenue cell itself: the leg's Rate
+// includes fuel, but OO Rev is the cut of the freight only.
+function ooColumnPair({ revHeader, milesHeader, ooRevHeader, ooRpmHeader, baseOf = null }) {
   return [
     {
       header: ooRevHeader,
       width: 100,
       format: "currency",
       _ooSource: revHeader,
+      _ooBase: baseOf,
       // NOT a plain SUM: an assumed OO on an unassigned lane shows its own math, but the bottom line
       // stays a statement of what is actually committed. Rows with no driver are excluded.
       getTotalFormula: ({ firstDataRow, lastDataRow, colLetter, resolvedColumns }) => {
@@ -821,6 +833,7 @@ function buildSummaryColumns({
       milesHeader: "Miles",
       ooRevHeader: "OO Rev",
       ooRpmHeader: "OO RPM",
+      baseOf: (r) => Number(r.freight) || 0,
     }),
   );
   if (showRounder) {
@@ -846,11 +859,12 @@ function buildSummaryColumns({
   return cols.map((c) => {
     if (c._ooSource) {
       const rev = letterOf(c._ooSource);
+      const base = (r, i) => (c._ooBase ? c._ooBase(r) : `${rev}${rowOf(i)}`);
       return {
         ...c,
         getLabel: (r, i) =>
           (isEffectiveOwnerOperator(r, driverTypes, assumedTypes)
-            ? `=${rev}${rowOf(i)}*${SUMMARY_CUT_REF}`
+            ? `=${base(r, i)}*${SUMMARY_CUT_REF}`
             : ""),
       };
     }

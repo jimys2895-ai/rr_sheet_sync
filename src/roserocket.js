@@ -318,6 +318,19 @@ function freightRateFromQuote(quote) {
   return total > 0 ? Math.round(total * 100) / 100 : null;
 }
 
+// Fuel on the quote — every fuel line type (surcharge %, per mile, flat) — as RoseRocket totals it in
+// fuel_cost; the fuel-typed quote items are the fallback when that total is missing. Revenue figures add
+// this to the freight; OO Rev and RPM stay on freight alone.
+function fuelFromQuote(quote) {
+  if (!quote) return null;
+  const direct = Number(quote.fuel_cost);
+  if (Number.isFinite(direct) && direct > 0) return Math.round(direct * 100) / 100;
+  const total = (quote.quote_items ?? [])
+    .filter(i => String(i?.quote_item_type_id ?? '').toLowerCase().startsWith('fuel'))
+    .reduce((sum, i) => sum + (Number(i.total_amount) || 0), 0);
+  return total > 0 ? Math.round(total * 100) / 100 : null;
+}
+
 function quoteCurrency(quote, order) {
   return String(
     quote?.cost_currency_id
@@ -334,19 +347,26 @@ function cadFxRateFromQuote(quote) {
   return null;
 }
 
-// The outbound/inbound sheet Rate is always shown in CAD.
-function freightRateCadFromQuote(quote, order) {
-  const freight = freightRateFromQuote(quote);
-  if (freight == null) return null;
+// A quote amount in CAD — the outbound/inbound sheets and trip history always show CAD.
+function quoteAmountCad(amount, quote, order) {
+  if (amount == null) return null;
   const currency = quoteCurrency(quote, order);
-  if (currency === 'cad') return freight;
+  if (currency === 'cad') return amount;
   const fxRate = cadFxRateFromQuote(quote)
     ?? (() => {
       const n = parseFloat(process.env.USD_TO_CAD_RATE ?? '');
       return Number.isFinite(n) && n > 0 ? n : null;
     })();
   if (!fxRate) return null;
-  return Math.round(freight * fxRate * 100) / 100;
+  return Math.round(amount * fxRate * 100) / 100;
+}
+
+function freightRateCadFromQuote(quote, order) {
+  return quoteAmountCad(freightRateFromQuote(quote), quote, order);
+}
+
+function fuelCadFromQuote(quote, order) {
+  return quoteAmountCad(fuelFromQuote(quote), quote, order);
 }
 
 // The outbound/inbound sheet's manifest is the line-haul one — the manifest on the DELIVERY (D) leg.
@@ -949,6 +969,7 @@ async function filterOutLoadedDeliveries(orders, { manifestSide = 'delivery' } =
         ]);
         const quote = primaryQuote(quotes);
         const freightRate = freightRateCadFromQuote(quote, o);
+        const fuelRate = fuelCadFromQuote(quote, o);
         // Drop completed legs: outbound when the delivery leg is LDT/delivered, inbound when the
         // pickup leg is unloaded at terminal (UT). An outbound order reaching LDT also marks its
         // manifest for the US I/B auto-tag (the truck is committed and will collect inbound next).
@@ -987,7 +1008,7 @@ async function filterOutLoadedDeliveries(orders, { manifestSide = 'delivery' } =
             milesOverride,
           ),
         );
-        return { o: { ...o, _freightRate: freightRate ?? '' }, hide: false };
+        return { o: { ...o, _freightRate: freightRate ?? '', _fuelRate: fuelRate ?? '' }, hide: false };
       } catch {
         return { o, hide: false };
       }
@@ -1056,6 +1077,7 @@ async function resolveOrdersForHistory(
         ]);
         const quote = primaryQuote(quotes);
         const freightRate = freightRateCadFromQuote(quote, o);
+        const fuelRate = fuelCadFromQuote(quote, o);
         const complete = orderLegComplete(legs, manifestSide, { allowDirectDelivery });
         const tripId = pickManifestTripIdFor(legs, manifestSide);
         let trip = null;
@@ -1077,7 +1099,7 @@ async function resolveOrdersForHistory(
           milesOverride,
         );
         return {
-          order: { ...o, _freightRate: freightRate ?? '' },
+          order: { ...o, _freightRate: freightRate ?? '', _fuelRate: fuelRate ?? '' },
           manifest,
           scheduling: schedulingFromLegs(legs, o),
           complete,
@@ -1418,6 +1440,8 @@ module.exports = {
   primaryQuote,
   freightRateFromQuote,
   freightRateCadFromQuote,
+  fuelFromQuote,
+  fuelCadFromQuote,
   manifestLabelFromTrip,
   manifestMilesFromTrip,
   inboundManifestMiles,

@@ -16,6 +16,7 @@ const {
   fetchOrderQuotes,
   primaryQuote,
   freightRateCadFromQuote,
+  fuelCadFromQuote,
   fetchDriverTypes,
   normalizePersonKey,
   client,
@@ -148,6 +149,28 @@ const ratioTotal = (numHeader, denHeader) => ({
   },
 });
 
+// (numerator − deduction) ÷ denominator over the visible rows: RPM on the freight alone, now that Revenue
+// on the O/B and I/B tabs includes fuel and the fuel sits in its own (hidden) column.
+const netRatioTotal = (numHeader, lessHeader, denHeader) => ({
+  format: 'currency',
+  getTotalFormula: ({ firstDataRow, lastDataRow, colLetter: cl, resolvedColumns }) => {
+    const st = (h) => {
+      const L = letterOf(h, cl, resolvedColumns);
+      return `SUBTOTAL(109,${L}${firstDataRow}:${L}${lastDataRow})`;
+    };
+    return `=IFERROR((${st(numHeader)}-${st(lessHeader)})/${st(denHeader)},"")`;
+  },
+});
+
+// The hidden Fuel column on the O/B and I/B tabs (and the roll-ups that read them). Revenue there is
+// freight + fuel; OO Rev and RPM are worked on Revenue − Fuel, so they stay on the freight alone — and a
+// hand-corrected Revenue still flows through. Trips archived before fuel was added have a blank Fuel,
+// which counts as 0, so their figures are exactly what they were. It sits after Notes, the last column,
+// because the client's group-by views are pinned to column positions.
+const fuelColumn = () => ({
+  header: 'Fuel', getLabel: (r) => r.Fuel ?? '', width: 80, format: 'currency', hiddenByDefault: true, ...subtotal('Fuel'),
+});
+
 // Driver type from RoseRocket, keyed off the (preserved) Driver name: "OO" owner-operator, "CD" company
 // driver, blank if unknown. Only owner-operators get the OO Rev / OO RPM figures.
 const isOwnerOp = (r, driverTypes) =>
@@ -183,7 +206,7 @@ function buildColumns(kind, driverTypes) {
     // Miles show as whole numbers. The Table's DOUBLE column type renders the cell's own digits (it
     // ignores a number format), so the value itself is rounded; the RPM figures keep the precise ratio.
     { header: 'Miles', getLabel: (r) => wholeMiles(r.Miles), width: 85, ...subtotal('Miles'), format: 'integer' },
-    { header: 'RPM', getLabel: null, width: 70, ...ratioTotal('Revenue', 'Miles') }, // live formula, set below
+    { header: 'RPM', getLabel: null, width: 70, ...(kind === 'leg' ? netRatioTotal('Revenue', 'Fuel', 'Miles') : ratioTotal('Revenue', 'Miles')) }, // live formula, set below
     { header: 'OO RPM', getLabel: null, width: 75, ...ratioTotal('OO Rev', 'Miles') }, // formula set below
     // A REAL date (not the "Week N" label), so week / month / year-over-year all become computable and
     // SUMIFS can compare against it. Deliberately sits just before Notes: the client's group-by views are
@@ -192,16 +215,19 @@ function buildColumns(kind, driverTypes) {
     { header: 'Date', getLabel: (r) => r.Date ?? '', width: 100, format: 'date' },
     { header: 'Notes', getLabel: (r) => r.Notes ?? '', width: 260 },
   );
+  if (kind === 'leg') cols.push(fuelColumn());
   const at = (h) => colLetter(cols.findIndex((c) => c.header === h));
   const revL = at('Revenue'), milesL = at('Miles'), ooRevL = at('OO Rev');
   const row = (i) => HEADER_ROW + 1 + i; // header on row 2, first data row on row 3
+  // The freight: Revenue less the hidden Fuel on the O/B and I/B tabs; the Rounder's Revenue as is.
+  const freight = (i) => (kind === 'leg' ? `(${revL}${row(i)}-${at('Fuel')}${row(i)})` : `${revL}${row(i)}`);
   // RPM is a LIVE formula (Revenue ÷ Miles), not a stored value, so a manual correction to the Miles cell
   // flows straight through to RPM (and, via SUBTOTAL, the trip total). Miles edits survive syncs because a
   // completed trip is frozen — its row is re-emitted from the sheet, not re-pulled from RoseRocket.
   cols.find((c) => c.header === 'RPM').getLabel = (r, i) =>
-    `=IFERROR(${revL}${row(i)}/${milesL}${row(i)},"")`;
+    `=IFERROR(${freight(i)}/${milesL}${row(i)},"")`;
   cols.find((c) => c.header === 'OO Rev').getLabel = (r, i) =>
-    isOwnerOp(r, driverTypes) ? `=${revL}${row(i)}*${CUT_REF}` : '';
+    isOwnerOp(r, driverTypes) ? `=${freight(i)}*${CUT_REF}` : '';
   cols.find((c) => c.header === 'OO RPM').getLabel = (r, i) =>
     isOwnerOp(r, driverTypes) ? `=IFERROR(${ooRevL}${row(i)}/${milesL}${row(i)},"")` : '';
   return cols;
@@ -242,7 +268,7 @@ function sourceLetters(kind, driverTypes) {
   const at = (h) => colLetter(cols.findIndex((c) => c.header === h));
   return {
     driver: at('Driver'), revenue: at('Revenue'), ooRev: at('OO Rev'),
-    miles: at('Miles'), date: at('Date'),
+    miles: at('Miles'), date: at('Date'), fuel: kind === 'leg' ? at('Fuel') : null,
   };
 }
 
@@ -266,19 +292,21 @@ function buildByDriverColumns(driverTypes) {
     { header: 'Revenue', getLabel: null, width: 105, ...subtotal('Revenue'), format: 'currency' },
     { header: 'OO Rev', getLabel: null, width: 105, ...subtotal('OO Rev'), format: 'currency' },
     { header: 'Miles', getLabel: null, width: 90, ...subtotal('Miles'), format: 'integer' },
-    { header: 'RPM', getLabel: null, width: 70, ...ratioTotal('Revenue', 'Miles') },
+    { header: 'RPM', getLabel: null, width: 70, ...netRatioTotal('Revenue', 'Fuel', 'Miles') },
     { header: 'OO RPM', getLabel: null, width: 75, ...ratioTotal('OO Rev', 'Miles') },
+    fuelColumn(),
   ];
   const at = (h) => colLetter(cols.findIndex((c) => c.header === h));
-  const revL = at('Revenue'), ooRevL = at('OO Rev'), milesL = at('Miles');
+  const revL = at('Revenue'), ooRevL = at('OO Rev'), milesL = at('Miles'), fuelL = at('Fuel');
   const row = (i) => BY_DRIVER_HEADER_ROW + 1 + i;
   const set = (h, fn) => { cols.find((c) => c.header === h).getLabel = fn; };
   set('Trips', (r, i) => byDriverAgg(r, row(i)).count);
   set('Revenue', (r, i) => byDriverAgg(r, row(i)).sum(r.L.revenue));
   set('OO Rev', (r, i) => byDriverAgg(r, row(i)).sum(r.L.ooRev));
   set('Miles', (r, i) => byDriverAgg(r, row(i)).sum(r.L.miles));
+  set('Fuel', (r, i) => (r.L.fuel ? byDriverAgg(r, row(i)).sum(r.L.fuel) : ''));
   // The weighted rates the group-by view can't express: totals divided, not rates averaged.
-  set('RPM', (r, i) => `=IFERROR(${revL}${row(i)}/${milesL}${row(i)},"")`);
+  set('RPM', (r, i) => `=IFERROR((${revL}${row(i)}-${fuelL}${row(i)})/${milesL}${row(i)},"")`);
   set('OO RPM', (r, i) => `=IFERROR(${ooRevL}${row(i)}/${milesL}${row(i)},"")`);
   return cols;
 }
@@ -355,12 +383,14 @@ const sumIn = (tab, L, period, letter) =>
 
 // Totals-row difference between two ratios — B's rate minus A's — computed from the SUBTOTAL sums rather
 // than by adding up the per-driver deltas, which would weight every driver equally regardless of miles.
-const ratioDiffTotal = (numB, denB, numA, denA) => ({
+// lessB / lessA take each period's fuel off its revenue, so the rates compared are freight RPMs.
+const ratioDiffTotal = (numB, denB, numA, denA, lessB = null, lessA = null) => ({
   format: 'currency',
   getTotalFormula: ({ firstDataRow, lastDataRow, colLetter: cl, resolvedColumns }) => {
     const L = (h) => letterOf(h, cl, resolvedColumns);
     const st = (h) => `SUBTOTAL(109,${L(h)}${firstDataRow}:${L(h)}${lastDataRow})`;
-    return `=IFERROR(${st(numB)}/${st(denB)}-${st(numA)}/${st(denA)},"")`;
+    const net = (num, less) => (less ? `(${st(num)}-${st(less)})` : st(num));
+    return `=IFERROR(${net(numB, lessB)}/${st(denB)}-${net(numA, lessA)}/${st(denA)},"")`;
   },
 });
 
@@ -381,14 +411,15 @@ function buildCompareColumns(driverTypes) {
       { header: `${p.key} Revenue`, getLabel: null, width: 105, ...subtotal(`${p.key} Revenue`), format: 'currency' },
       { header: `${p.key} OO Rev`, getLabel: null, width: 105, ...subtotal(`${p.key} OO Rev`), format: 'currency' },
       { header: `${p.key} Miles`, getLabel: null, width: 85, ...subtotal(`${p.key} Miles`), format: 'integer' },
-      { header: `${p.key} RPM`, getLabel: null, width: 70, ...ratioTotal(`${p.key} Revenue`, `${p.key} Miles`) },
+      { header: `${p.key} RPM`, getLabel: null, width: 70, ...netRatioTotal(`${p.key} Revenue`, `${p.key} Fuel`, `${p.key} Miles`) },
       { header: `${p.key} OO RPM`, getLabel: null, width: 80, ...ratioTotal(`${p.key} OO Rev`, `${p.key} Miles`) },
     );
   }
   cols.push(
     { header: 'Δ Revenue', getLabel: null, width: 105, ...subtotal('Δ Revenue'), format: 'currency' },
     { header: 'Δ Miles', getLabel: null, width: 85, ...subtotal('Δ Miles'), format: 'integer' },
-    { header: 'Δ RPM', getLabel: null, width: 80, ...ratioDiffTotal('B Revenue', 'B Miles', 'A Revenue', 'A Miles') },
+    { header: 'Δ RPM', getLabel: null, width: 80, ...ratioDiffTotal('B Revenue', 'B Miles', 'A Revenue', 'A Miles', 'B Fuel', 'A Fuel') },
+    ...period.map((p) => ({ ...fuelColumn(), header: `${p.key} Fuel`, getLabel: null, ...subtotal(`${p.key} Fuel`) })),
   );
 
   const at = (h) => colLetter(cols.findIndex((c) => c.header === h));
@@ -401,7 +432,9 @@ function buildCompareColumns(driverTypes) {
     set(`${p.key} Revenue`, (r, i) => forRow(compareLegPick((l) => sumIn(l.tab, L(l), p.range, L(l).revenue)), i));
     set(`${p.key} OO Rev`, (r, i) => forRow(compareLegPick((l) => sumIn(l.tab, L(l), p.range, L(l).ooRev)), i));
     set(`${p.key} Miles`, (r, i) => forRow(compareLegPick((l) => sumIn(l.tab, L(l), p.range, L(l).miles)), i));
-    set(`${p.key} RPM`, (r, i) => `=IFERROR(${at(`${p.key} Revenue`)}${row(i)}/${at(`${p.key} Miles`)}${row(i)},"")`);
+    set(`${p.key} Fuel`, (r, i) => forRow(compareLegPick((l) => (L(l).fuel ? sumIn(l.tab, L(l), p.range, L(l).fuel) : '0')), i));
+    set(`${p.key} RPM`, (r, i) =>
+      `=IFERROR((${at(`${p.key} Revenue`)}${row(i)}-${at(`${p.key} Fuel`)}${row(i)})/${at(`${p.key} Miles`)}${row(i)},"")`);
     set(`${p.key} OO RPM`, (r, i) => `=IFERROR(${at(`${p.key} OO Rev`)}${row(i)}/${at(`${p.key} Miles`)}${row(i)},"")`);
   }
   set('Δ Revenue', (r, i) => `=${at('B Revenue')}${row(i)}-${at('A Revenue')}${row(i)}`);
@@ -463,7 +496,7 @@ async function updateCompareTab(sheetId, driverTypes, driverSets) {
 // off the order LIST row (`ordersById`) — RoseRocket does NOT return them on the order detail endpoint —
 // so an order that fell outside the fetch window is unrecoverable and reported via `resolved`.
 async function sumOrderFigures(api, orderIds, ordersById) {
-  let rev = 0, feet = 0, weight = 0, resolved = 0;
+  let rev = 0, fuel = 0, feet = 0, weight = 0, resolved = 0;
   for (let i = 0; i < orderIds.length; i += LEG_CONCURRENCY) {
     const batch = orderIds.slice(i, i + LEG_CONCURRENCY);
     await Promise.all(batch.map(async (oid) => {
@@ -473,10 +506,12 @@ async function sumOrderFigures(api, orderIds, ordersById) {
       feet += Number(o.total_linear_feet) || 0;
       weight += Number(o.total_weight_lb) || 0;
       const quote = primaryQuote(await fetchOrderQuotes(api, oid).catch(() => []));
-      rev += Number(freightRateCadFromQuote(quote, o)) || 0;
+      const orderFuel = Number(fuelCadFromQuote(quote, o)) || 0;
+      rev += (Number(freightRateCadFromQuote(quote, o)) || 0) + orderFuel;
+      fuel += orderFuel;
     }));
   }
-  return { rev: round2(rev), feet, weight, resolved };
+  return { rev: round2(rev), fuel: round2(fuel), feet, weight, resolved };
 }
 
 // Order ids for one side of the trip, taken from the TASKS rather than the stops: a stop's role says
@@ -533,19 +568,21 @@ async function resolveManifest(api, tripId, candidate, ordersById, stopCache) {
   const obOrderIds = taskOrderIds(outboundStops, 'destination');
   const ob = await sumOrderFigures(api, obOrderIds, ordersById);
 
-  let ibRev = 0, ibFeet = 0, ibWeight = 0;
+  let ibRev = 0, ibFuel = 0, ibFeet = 0, ibWeight = 0;
   let ibOrderIds = [];
   let ibResolved = ibRecords.length;
   if (ibRecords.length) {
     for (const r of ibRecords) {
-      ibRev += Number(r.order._freightRate) || 0;
+      const orderFuel = Number(r.order._fuelRate) || 0;
+      ibRev += (Number(r.order._freightRate) || 0) + orderFuel;
+      ibFuel += orderFuel;
       ibFeet += Number(r.order.total_linear_feet) || 0;
       ibWeight += Number(r.order.total_weight_lb) || 0;
     }
   } else {
     ibOrderIds = taskOrderIds(inboundStops, 'origin');
     const ib = await sumOrderFigures(api, ibOrderIds, ordersById);
-    ({ rev: ibRev, feet: ibFeet, weight: ibWeight, resolved: ibResolved } = ib);
+    ({ rev: ibRev, fuel: ibFuel, feet: ibFeet, weight: ibWeight, resolved: ibResolved } = ib);
   }
   // Whole-trip revenue: RoseRocket's own on-manifest leg total (matches the live I/B sheet's Rounder
   // Rate the client copied), falling back to outbound + inbound if it can't be computed.
@@ -574,8 +611,8 @@ async function resolveManifest(api, tripId, candidate, ordersById, stopCache) {
     endState: lastDelivery?.state || '',
     startCity: firstPickup?.city || '',
     startState: firstPickup?.state || '',
-    obRev: ob.rev, obFeet: ob.feet, obWeight: ob.weight, obMiles: obMiles ?? '',
-    ibRev: round2(ibRev), ibFeet, ibWeight, ibMiles: ibMiles ?? '',
+    obRev: ob.rev, obFuel: ob.fuel, obFeet: ob.feet, obWeight: ob.weight, obMiles: obMiles ?? '',
+    ibRev: round2(ibRev), ibFuel: round2(ibFuel), ibFeet, ibWeight, ibMiles: ibMiles ?? '',
     rounderRev: round2(rounderRev), rounderMiles: rounderMiles ?? '',
     // A leg that HAS orders but resolved none of them has aged out of the fetch window — its footage,
     // weight and revenue are gone, so the trip is skipped rather than archived half-blank.
@@ -594,16 +631,16 @@ function obRecord(m) {
   return {
     Completed: m.week, Date: m.completedDate, City: m.endCity, State: m.endState, Driver: m.driver,
     'Manifest ID': manifestCell(m), Feet: num(m.obFeet), Weight: num(m.obWeight),
-    Revenue: m.obRev || '', Miles: m.obMiles || '',
-    RPM: rpmOf(Number(m.obRev) || 0, Number(m.obMiles) || 0), Notes: '',
+    Revenue: m.obRev || '', Fuel: m.obFuel || '', Miles: m.obMiles || '',
+    RPM: rpmOf((Number(m.obRev) || 0) - (Number(m.obFuel) || 0), Number(m.obMiles) || 0), Notes: '',
   };
 }
 function ibRecord(m) {
   return {
     Completed: m.week, Date: m.completedDate, City: m.startCity, State: m.startState, Driver: m.driver,
     'Manifest ID': manifestCell(m), Feet: num(m.ibFeet), Weight: num(m.ibWeight),
-    Revenue: m.ibRev || '', Miles: m.ibMiles || '',
-    RPM: rpmOf(Number(m.ibRev) || 0, Number(m.ibMiles) || 0), Notes: '',
+    Revenue: m.ibRev || '', Fuel: m.ibFuel || '', Miles: m.ibMiles || '',
+    RPM: rpmOf((Number(m.ibRev) || 0) - (Number(m.ibFuel) || 0), Number(m.ibMiles) || 0), Notes: '',
   };
 }
 function rounderRecord(m) {

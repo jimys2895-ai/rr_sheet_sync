@@ -1583,16 +1583,22 @@ async function syncTable(spreadsheetId, tabName, opts = {}) {
   }
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
 
-  // Google quirk: when a Table's header is NOT on row 1, addTable inserts a phantom duplicate cell into
-  // the header row (shifting the real headers right). Overwrite the header row with the correct values —
-  // plus trailing blanks to wipe the phantom — right after CREATING the table (updateTable doesn't do it).
+  // Google quirk: when a Table's header is NOT on row 1, addTable inserts phantom duplicate cells into
+  // the header row (shifting the real headers right) — more than one when the Table has hidden columns.
+  // Rewrite the header row and clear everything to its right, right after CREATING the table
+  // (updateTable doesn't do it).
   if (!existing) {
     const headers = columns.map((c) => c.header);
+    const row = headerRowIndex + 1;
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${quoteSheetTitle(tabName)}!A${headerRowIndex + 1}`,
+      range: `${quoteSheetTitle(tabName)}!A${row}`,
       valueInputOption: 'RAW',
-      requestBody: { values: [[...headers, '', '']] },
+      requestBody: { values: [headers] },
+    });
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `${quoteSheetTitle(tabName)}!${colLetter(endColumnIndex)}${row}:ZZ${row}`,
     });
   }
 }
