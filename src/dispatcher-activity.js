@@ -18,7 +18,6 @@ require('dotenv').config();
 const axios = require('axios');
 const { getToken } = require('./auth');
 const {
-  fetchOrdersForOrg,
   fetchOrderLegs,
   fetchOrderCommissionees,
   fetchMasterTrip,
@@ -151,20 +150,53 @@ async function buildRow({ order, orgUrl }, caches) {
   };
 }
 
+// The fields the sheet reads off an order. A list row carries ~300; holding whole rows for both orgs'
+// lists (~9,000 orders) took the job close to its Render instance's memory limit.
+const ORDER_FIELDS = [
+  'id', 'full_id', 'order_state_id', 'location_name', 'billing_org_name', 'pickup_start_at', 'pickup_end_at',
+  'from_timezone', 'created_at', 'user_id', 'csr_name', 'account_manager_name', 'dispatcher_user_name', 'dispatch_name',
+];
+const PAGE_SIZE = 500;
+let peakMb = 0;
+const noteMemory = () => { peakMb = Math.max(peakMb, Math.round(process.memoryUsage().rss / 1048576)); };
+
+// One org's orders with a requested pick-up in the window: the list is read page by page, newest created
+// first, back to CREATED_LOOKBACK_DAYS, and each in-window order is cut down to ORDER_FIELDS as its page
+// arrives — so nothing else is ever held. `seen` drops an order a later page (or the other org) repeats.
+async function ordersInWindow(orgUrl, { first, last }, seen) {
+  const api = await client(orgUrl);
+  const since = Date.now() - CREATED_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+  const kept = [];
+  let listed = 0;
+  for (let offset = 0; ;) {
+    const res = await api.get('/api/v1/orders', { params: { sort: 'created_at desc', limit: PAGE_SIZE, offset } });
+    const page = res.data?.data?.orders ?? res.data?.orders ?? [];
+    let reachedOld = false;
+    for (const o of page) {
+      const created = Date.parse(o.created_at ?? '');
+      if (Number.isFinite(created) && created < since) { reachedOld = true; break; }
+      listed += 1;
+      const day = pickupDay(o);
+      if (!o.full_id || seen.has(o.id) || day < first || day > last) continue;
+      if (EXCLUDED_STATES.has(String(o.order_state_id ?? '').toLowerCase())) continue;
+      seen.add(o.id);
+      kept.push(Object.fromEntries(ORDER_FIELDS.map((k) => [k, o[k]])));
+    }
+    noteMemory();
+    if (reachedOld || page.length < PAGE_SIZE) break;
+    offset += page.length;
+  }
+  return { kept, listed };
+}
+
 async function buildRows() {
   const { first, last } = windowDays();
   const inWindow = [];
   const seen = new Set();
   for (const orgUrl of [CELOGISTICS_ORG_URL, SYNC_ORG_URL].filter((o, i, a) => o && a.indexOf(o) === i)) {
-    const orders = await fetchOrdersForOrg(orgUrl, { sinceDays: CREATED_LOOKBACK_DAYS });
-    const kept = orders.filter((o) => {
-      const day = pickupDay(o);
-      return o.full_id && !seen.has(o.id) && day >= first && day <= last
-        && !EXCLUDED_STATES.has(String(o.order_state_id ?? '').toLowerCase());
-    });
-    kept.forEach((o) => seen.add(o.id));
+    const { kept, listed } = await ordersInWindow(orgUrl, { first, last }, seen);
     inWindow.push(...kept.map((order) => ({ order, orgUrl })));
-    console.log(`[DispatcherActivity] ${new URL(orgUrl).hostname.split('.')[0]}: ${kept.length} of ${orders.length} order(s) have a pick-up between ${first} and ${last}.`);
+    console.log(`[DispatcherActivity] ${new URL(orgUrl).hostname.split('.')[0]}: ${kept.length} of ${listed} order(s) have a pick-up between ${first} and ${last}.`);
   }
 
   const caches = { trips: new Map(), users: new Map() };
@@ -176,12 +208,14 @@ async function buildRows() {
       return null;
     })));
     rows.push(...built.filter(Boolean));
+    noteMemory();
     if ((i / CONCURRENCY) % 25 === 24 || i + CONCURRENCY >= inWindow.length) {
       console.log(`[DispatcherActivity] Built ${rows.length}/${inWindow.length} row(s).`);
     }
   }
   // Newest pick-up first, as the client's own list was.
   rows.sort((a, b) => (a.sortKey < b.sortKey ? 1 : a.sortKey > b.sortKey ? -1 : 0));
+  console.log(`[DispatcherActivity] Peak memory ${peakMb} MB.`);
   return rows;
 }
 
