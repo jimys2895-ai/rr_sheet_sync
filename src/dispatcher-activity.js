@@ -1,7 +1,7 @@
 // Dispatcher-activity sheet: every order whose requested pick-up falls in the last 60 days, with who
 // handled it — CSR, dispatcher, sales rep — and when and by whom it was first made. Rebuilt once a day
 // by its own cron job (1:00 AM Pacific). The "data" tab is replaced wholesale, so nothing typed into it
-// survives a run. Unlike the other sheets it carries no "Last synced" stamp — the client asked for none.
+// survives a run.
 //
 // Rows come from both orgs' order lists — CE Logistics and all of CE Trucking. Neither login can see the
 // other org's orders, so each order's legs, manifest and commissionees are read with the login of the

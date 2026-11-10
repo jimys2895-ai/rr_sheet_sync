@@ -22,7 +22,7 @@ const {
 } = require('./roserocket');
 const {
   readTabValues, writeToSheetWithRetry, syncTable, setConfigCell, withGoogleRetry,
-  writeTabRange, applyCellDropdown, stampLastSynced,
+  writeTabRange, applyCellDropdown,
   sleep,
 } = require('./sheets');
 
@@ -961,11 +961,6 @@ async function syncTripHistory(sheetId, { sinceDays = SINCE_DAYS, flushEvery = 0
     `[TripHistory] ${archivedCount} manifest(s) archived` +
       (skipped ? ` (${skipped} skipped — orders aged out of the window)` : '') + '.',
   );
-
-  // One stamp per spreadsheet, on Rounder — the tab the planners live in. Deliberately not all three:
-  // this job already runs close to the Sheets write quota, and three markers buy nothing over one.
-  const stamped = await stampLastSynced(sheetId, ROUNDER_TAB);
-  if (stamped) console.log(`[TripHistory] Rounder stamped: last synced ${stamped}`);
 
   console.log(`[TripHistory] Done in ${((Date.now() - t0) / 1000).toFixed(1)}s.`);
   return { sheetId, archived: archivedCount, skipped };

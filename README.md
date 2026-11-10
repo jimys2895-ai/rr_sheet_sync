@@ -389,7 +389,7 @@ npm run invoice-sent
 ## Dispatcher activity
 
 Spreadsheet: `GOOGLE_DISPATCHER_ACTIVITY_SHEET_ID`. Tab: **data**. Cron: `roserocket-dispatcher-activity`,
-daily at 09:00 UTC (1:00 AM PT in winter, 2:00 AM PT in summer). No "Last synced" stamp on this sheet.
+daily at 09:00 UTC (1:00 AM PT in winter, 2:00 AM PT in summer).
 
 Every CE Logistics and CE Trucking order whose requested pick-up falls in the last 60 days (today
 included), newest first; cancelled orders and quotes not yet booked are left out. The tab is rebuilt

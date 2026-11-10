@@ -1640,44 +1640,8 @@ async function setConfigCell(spreadsheetId, tabName, opts = {}) {
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
 }
 
-// Writes "Last synced <local time>" beside a tab's config cells.
-//
-// Every one of these sheets is a live mirror with no visible sign of its own freshness, which is exactly
-// how a sync could stop for two and a half days before a person noticed the rows looked old. A stamp the
-// planners can see turns that into something obvious at a glance instead of something inferred from
-// version history.
-//
-// Written as TEXT: left to itself Sheets parses a timestamp into a serial and renders it however the
-// locale feels, which is precisely the sort of quiet reinterpretation this is meant to guard against.
-async function stampLastSynced(spreadsheetId, tabName, options = {}) {
-  const {
-    cell = 'D1',
-    label = 'Last synced',
-    timeZone = process.env.REPORT_TIMEZONE || 'America/Toronto',
-  } = options;
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short',
-  }).formatToParts(new Date());
-  const get = (t) => parts.find((p) => p.type === t)?.value ?? '';
-  const stamp = `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')} ${get('timeZoneName')}`;
-  const col = cell.replace(/\d+/g, '');
-  const rowNum = cell.replace(/\D+/g, '');
-  const nextCol = String.fromCharCode(col.charCodeAt(col.length - 1) + 1);
-  const range = `${col}${rowNum}:${nextCol}${rowNum}`;
-  try {
-    await writeTabRange(spreadsheetId, tabName, range, [[label, `'${stamp}`]]);
-  } catch (err) {
-    // Never fail a sync over its own freshness marker.
-    console.warn(`[Sheets] Could not stamp "${tabName}!${range}": ${err.message}`);
-    return null;
-  }
-  return stamp;
-}
-
 module.exports = {
   createSpreadsheet,
-  stampLastSynced,
   writeToSheet,
   writeToSheetWithRetry,
   ensureGoogleAuth,

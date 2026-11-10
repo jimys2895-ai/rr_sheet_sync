@@ -21,7 +21,6 @@ const {
   clearTabRange,
   applyCellDropdown,
   applyFilterDropdownCell,
-  stampLastSynced,
   syncBanding,
 } = require("./sheets");
 
@@ -1289,9 +1288,6 @@ async function syncInvoiceSentReport(spreadsheetId) {
 
   await removeUnwantedOpsSheets(spreadsheetId, COMMISSION_SHEET_TAB_ORDER);
   await reorderSheets(spreadsheetId, COMMISSION_SHEET_TAB_ORDER);
-  // Beside the Lookup tab's filter cells — the one place on this sheet with a settled config column.
-  const stamped = await stampLastSynced(spreadsheetId, COMMISSION_LOOKUP_TAB);
-  if (stamped) console.log(`[InvoiceSent]   Lookup stamped: last synced ${stamped}`);
   console.log(
     `[InvoiceSent] Wrote ${monthlyRows.length} current-month leg row(s) and ${previousRows.length} previous-month leg row(s) ` +
       `from ${monthlyOrderEntries.length} order(s); ` +
