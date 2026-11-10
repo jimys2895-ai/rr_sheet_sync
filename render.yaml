@@ -94,10 +94,11 @@ services:
     runtime: node
     plan: starter
     region: oregon
-    # Daily at 11:00 UTC — 06:00 ET in winter, 07:00 ET in summer. Rebuilds the Dispatcher-activity sheet:
-    # every order with a requested pick-up in the last 60 days, with CSR, dispatcher, sales rep and who
-    # first made it. :00 is outbound's minute, but outbound reads its own sheet and this writes one tab.
-    schedule: "0 11 * * *"
+    # Daily at 09:00 UTC — 01:00 PT in winter (PST), 02:00 PT in summer (PDT). Rebuilds the
+    # Dispatcher-activity sheet: every order with a requested pick-up in the last 60 days, with CSR,
+    # dispatcher, sales rep and who first made it. It writes once, ~6 min in, so sharing outbound's :00
+    # start minute doesn't stack their Sheets writes.
+    schedule: "0 9 * * *"
     buildCommand: npm ci
     startCommand: npm run sync:dispatcher-activity
     autoDeploy: true
