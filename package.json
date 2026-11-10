@@ -20,6 +20,7 @@
     "trip-history:backfill": "node src/trip-history-backfill.js",
     "trip-history:dates": "node src/trip-history-dates.js",
     "trip-history:repair": "node src/trip-history-repair.js",
+    "trip-history:fuel": "node src/trip-history-fuel.js",
     "force-deliver": "node -e \"require('dotenv').config(); const { processForceDeliver } = require('./src/force-deliver'); const id = (process.env.GOOGLE_OPS_SHEET_ID||'').match(/\\/d\\/([a-zA-Z0-9-_]+)/)?.[1] || process.env.GOOGLE_OPS_SHEET_ID; if(!id){console.error('GOOGLE_OPS_SHEET_ID not set'); process.exit(1);} processForceDeliver(id).then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })\"",
     "force-cancel": "node -e \"require('dotenv').config(); const { processForceCancel } = require('./src/force-cancel'); const id = (process.env.GOOGLE_OPS_SHEET_ID||'').match(/\\/d\\/([a-zA-Z0-9-_]+)/)?.[1] || process.env.GOOGLE_OPS_SHEET_ID; if(!id){console.error('GOOGLE_OPS_SHEET_ID not set'); process.exit(1);} processForceCancel(id).then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })\"",
     "force-delete-manifest": "node -e \"require('dotenv').config(); const { processForceDeleteManifest } = require('./src/force-delete-manifest'); const id = (process.env.GOOGLE_OPS_SHEET_ID||'').match(/\\/d\\/([a-zA-Z0-9-_]+)/)?.[1] || process.env.GOOGLE_OPS_SHEET_ID; if(!id){console.error('GOOGLE_OPS_SHEET_ID not set'); process.exit(1);} processForceDeleteManifest(id).then(() => process.exit(0)).catch(e => { console.error(e.message); process.exit(1); })\"",

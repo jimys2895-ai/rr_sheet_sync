@@ -733,7 +733,7 @@ function readCutValue(grid, headerRowIdx, header, dataRows) {
 // re-resolved on the next run.
 async function updateTab(
   sheetId, tab, kind, driverTypes, newRecords,
-  { dropKeys = null, dateByManifest = null, overwriteDates = false } = {},
+  { dropKeys = null, dateByManifest = null, overwriteDates = false, revisionsByManifest = null } = {},
 ) {
   const grid = await readTabValues(sheetId, tab, { valueRenderOption: 'FORMULA' }).catch(() => []);
   // The header is wherever the Manifest ID column lives (row 1 pre-migration, row 2 once the Table exists).
@@ -748,6 +748,7 @@ async function updateTab(
   const seen = new Set();
   let dropped = 0;
   let filledDates = 0;
+  let revised = 0;
   if (keyIdx >= 0) {
     for (const row of dataRows) {
       const key = manifestKey(row[keyIdx]);
@@ -762,6 +763,9 @@ async function updateTab(
         const d = dateByManifest.get(key);
         if (d && d !== rec.Date) { rec.Date = d; filledDates++; }
       }
+      // A one-off correction to named fields of an archived row (the October fuel backfill). Every other
+      // field — Miles, Notes, Date — is kept exactly as it was.
+      if (revisionsByManifest?.has(key)) { Object.assign(rec, revisionsByManifest.get(key)); revised++; }
       existing.push(rec);
       seen.add(key);
     }
@@ -788,13 +792,14 @@ async function updateTab(
   console.log(
     `[TripHistory] ${tab}: ${existing.length} kept, ${added.length} added` +
       (dropped ? `, ${dropped} removed` : '') +
-      (filledDates ? `, ${filledDates} date(s) backfilled` : '') + ` → ${all.length} rows.`,
+      (filledDates ? `, ${filledDates} date(s) backfilled` : '') +
+      (revised ? `, ${revised} revised` : '') + ` → ${all.length} rows.`,
   );
   // Distinct driver names on the tab, for the By Driver roll-up. Taken from what was just written
   // (existing rows included), so it covers the whole archive rather than only this run's new trips.
   const drivers = [...new Set(all.map((r) => String(r.Driver ?? '').trim()).filter(Boolean))];
   return {
-    added: added.length, dropped, drivers, filledDates,
+    added: added.length, dropped, drivers, filledDates, revised,
     rowCount: all.length > 0 ? all.length + HEADER_ROW + 1 : 1,
   };
 }
@@ -1010,6 +1015,7 @@ module.exports = {
   hollowRowKeys,
   collectCandidates,
   resolveManifest,
+  manifestKey,
   isoWeek,
   OUTBOUND_TAB,
   INBOUND_TAB,
