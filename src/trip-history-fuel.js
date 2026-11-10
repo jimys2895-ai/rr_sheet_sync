@@ -15,7 +15,12 @@ const { readTabValues } = require('./sheets');
 //   O/B, I/B  Revenue = the archived Revenue + the trip's fuel, Fuel = that fuel. OO Rev and RPM are
 //             worked on Revenue − Fuel, so they stay exactly what they were — no paid figure moves.
 //   Rounder   Revenue = RoseRocket's on-manifest revenue as it stands today (it already includes fuel;
-//             the client keeps the Rounder on RoseRocket's figure).
+//             the client keeps the Rounder on RoseRocket's figure) — but ONLY on trips that carry fuel.
+//             RoseRocket's figure has moved since archiving on many fuel-free trips too (rates corrected,
+//             charges added at invoicing), and the client chose to leave those as archived.
+//
+// A leg archived with $0 Revenue (its orders were missing at the time) takes today's freight instead of
+// the archived 0, so the row doesn't end up showing fuel alone.
 //
 // Miles, Notes, Date and every other field are left alone. The trip and its orders are resolved by the
 // same code that archives new trips, so the fuel is exactly what a new trip would carry.
@@ -81,16 +86,20 @@ async function backfillTripFuel(sheetId, { from, apply = false }) {
       notFound.push(`${key} (${err.message})`);
       continue;
     }
+    let hasFuel = false;
     for (const [tab, fuel, rev] of [[OUTBOUND_TAB, m.obFuel, m.obRev], [INBOUND_TAB, m.ibFuel, m.ibRev]]) {
       const row = targets[tab].get(key);
       if (!row || !(fuel > 0)) continue;
-      revisions[tab].set(key, { Revenue: round2(row.revenue + fuel), Fuel: fuel });
+      hasFuel = true;
+      const freight = row.revenue > 0 ? row.revenue : round2(rev - fuel);
+      revisions[tab].set(key, { Revenue: round2(freight + fuel), Fuel: fuel });
       fuelTotal += fuel;
+      if (!(row.revenue > 0)) freightMoved.push(`${key} ${tab}: archived $0 — today's freight ${freight} used`);
       // For the record only: today's freight differs from what was archived (a rate changed afterwards).
-      if (Math.abs((rev - fuel) - row.revenue) > 0.01) freightMoved.push(`${key} ${tab}: archived ${row.revenue}, today ${round2(rev - fuel)}`);
+      else if (Math.abs((rev - fuel) - row.revenue) > 0.01) freightMoved.push(`${key} ${tab}: archived ${row.revenue}, today ${round2(rev - fuel)} (archived kept)`);
     }
     const rd = targets[ROUNDER_TAB].get(key);
-    if (rd && Number.isFinite(m.rounderRev) && Math.abs(m.rounderRev - rd.revenue) > 0.005) {
+    if (hasFuel && rd && Number.isFinite(m.rounderRev) && Math.abs(m.rounderRev - rd.revenue) > 0.005) {
       revisions[ROUNDER_TAB].set(key, { Revenue: m.rounderRev, _was: rd.revenue });
     }
   }
@@ -105,7 +114,7 @@ async function backfillTripFuel(sheetId, { from, apply = false }) {
   }
   console.log(`[TripFuel] Fuel added to O/B + I/B: $${round2(fuelTotal)}.`);
   if (notFound.length) console.log(`[TripFuel] Not resolvable (left as is): ${notFound.length} — ${notFound.slice(0, 20).join(', ')}`);
-  if (freightMoved.length) console.log(`[TripFuel] Freight changed in RoseRocket after archiving (archived freight kept): ${freightMoved.length} — ${freightMoved.slice(0, 20).join(' ; ')}`);
+  if (freightMoved.length) console.log(`[TripFuel] Freight differs from what was archived: ${freightMoved.length} — ${freightMoved.slice(0, 20).join(' ; ')}`);
   if (!apply) {
     console.log('[TripFuel] Dry run — nothing written. Pass --apply to write these changes.');
     return { revisions };

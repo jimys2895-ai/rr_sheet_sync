@@ -444,8 +444,8 @@ worked on it as before. A backfill run archives older trips with fuel included.
 
 Trips archived before the change can be brought in line with `npm run trip-history:fuel -- 2026-10-01`
 (dry run; add `--apply` to write, with the trip-history cron paused). O/B and I/B get the trip's fuel
-added to Revenue and written to Fuel — OO Rev and RPM do not move — and the Rounder takes RoseRocket's
-manifest revenue as it stands today. Miles, Notes and Date are left alone.
+added to Revenue and written to Fuel — OO Rev and RPM do not move — and, on trips that carry fuel only,
+the Rounder takes RoseRocket's manifest revenue as it stands today. Miles, Notes and Date are left alone.
 
 ### The By Driver tab
 
